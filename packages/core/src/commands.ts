@@ -17,6 +17,7 @@ import type {
   WallJustification,
   Window,
 } from "./model";
+import { reconnectWalls } from "./connections";
 import { getOfKind } from "./queries";
 import { newId, type Command, type Transaction } from "./store";
 
@@ -113,11 +114,15 @@ export function createWall(p: CreateWallParams): Command & { readonly wallId: Id
       tx.apply({ type: "putEntity", entity: wall });
       addToLevel(tx, p.levelId, wallId);
       associateMaterial(tx, p.layerSetId, wallId);
+      reconnectWalls(tx, [wallId]);
     },
   };
 }
 
-/** Mueve uno o varios muros. Sus huecos, puertas y ventanas los acompañan solos (posición relativa). */
+/**
+ * Mueve uno o varios muros. Sus huecos, puertas y ventanas los acompañan solos (posición relativa).
+ * Las uniones se recalculan: las que dejan de tocarse se rompen y las nuevas se crean.
+ */
 export function moveWalls(wallIds: readonly Id[], delta: Vec2): Command {
   return {
     label: wallIds.length === 1 ? "Mover muro" : "Mover muros",
@@ -133,6 +138,7 @@ export function moveWalls(wallIds: readonly Id[], delta: Vec2): Command {
           },
         });
       }
+      reconnectWalls(tx, wallIds);
     },
   };
 }
