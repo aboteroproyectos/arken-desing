@@ -1,0 +1,17 @@
+{
+  "name": "@arken/spatial",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@arken/core": "*",
+    "@arken/geometry": "*",
+    "rbush": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/rbush": "^4.0.0"
+  }
+}

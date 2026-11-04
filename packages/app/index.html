@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ARKEN · Planta</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <strong class="brand">ARKEN</strong>
+      <div class="group" role="toolbar" aria-label="Herramientas">
+        <button data-tool="select" title="Seleccionar (V)">Seleccionar <kbd>V</kbd></button>
+        <button data-tool="wall" title="Muro (M)">Muro <kbd>M</kbd></button>
+        <button data-tool="door" title="Puerta (P)">Puerta <kbd>P</kbd></button>
+        <button data-tool="window" title="Ventana (N)">Ventana <kbd>N</kbd></button>
+      </div>
+      <label class="group">Receta
+        <select id="layerset"></select>
+      </label>
+      <div class="group">
+        <button id="undo" title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
+        <button id="redo" title="Rehacer (Ctrl+Y)">↷ Rehacer</button>
+      </div>
+      <div class="group">
+        <button id="save" title="Descargar el modelo como JSON">Guardar JSON</button>
+        <button id="open" title="Abrir un modelo JSON">Abrir JSON</button>
+        <input id="file" type="file" accept="application/json,.json" hidden />
+      </div>
+    </header>
+    <main>
+      <canvas id="plan"></canvas>
+    </main>
+    <footer class="status">
+      <span id="hint"></span>
+      <span id="message" class="message"></span>
+      <span id="coords"></span>
+    </footer>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
