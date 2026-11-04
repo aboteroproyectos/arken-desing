@@ -4,5 +4,6 @@ export * from "./queries";
 export * from "./invariants";
 export * from "./store";
 export * from "./commands";
+export * from "./connections";
 export * from "./propagation";
 export * from "./seed";

@@ -14,8 +14,9 @@ Principios:
 packages/
   core/       Modelo de datos (Paso 1) y BimStore: comandos, transacciones, invariantes,
               índices inversos, eventos, deshacer/rehacer (Paso 2)
-  geometry/   Motor de geometría de planta: marco local del muro, capas, huecos con
-              plano de corte, símbolos de puerta y ventana, cajas envolventes (Paso 3)
+  geometry/   Motor de geometría de planta: marco local del muro, capas, uniones en L
+              (inglete) y T (tope), huecos con plano de corte, símbolos de puerta y
+              ventana, cajas envolventes (Paso 3)
   spatial/    R-Tree por nivel, clic en dos fases, selección por rectángulo, snapping (Paso 4)
   app/        Aplicación web: planta 2D en canvas con herramientas de dibujo
 docs/         Documentos de diseño de los Pasos 1 a 4
@@ -52,7 +53,9 @@ npm run build      # build de producción de la app en packages/app/dist
 
 ## Pendiente (próximos pasos)
 
-- Limpieza de uniones entre muros en L y T (Paso 3, §5)
+- Al mover un muro, estirar los muros unidos a él (hoy la unión se rompe si dejan de tocarse)
+- Uniones con más de dos muros en el mismo punto y prioridad de capas en las esquinas
+
 - Representación 3D (Body) y vista 3D
 - Mover el BimStore y el motor de geometría a un Web Worker
 - Varios niveles, tipos de muro (WallType), panel de propiedades editable

@@ -2,7 +2,8 @@
 //
 // Todo se calcula en el marco local del muro (u a lo largo del eje, n normal en planta) y se
 // pasa a coordenadas del nivel al final. La planta se genera desde los parámetros, no cortando
-// un 3D. Pendiente para más adelante: limpieza de uniones en L/T y la representación 3D (Body).
+// un 3D. Las uniones en L (inglete) y en T (tope) recortan los extremos de los muros.
+// Pendiente para más adelante: la representación 3D (Body).
 
 import {
   TOLERANCE,
@@ -120,6 +121,113 @@ export function toLocal(f: WallFrame, p: Vec2): { u: Meters; n: Meters } {
   return { u: dx * f.u.x + dy * f.u.y, n: dx * f.n.x + dy * f.n.y };
 }
 
+// ─── Uniones: recorte de los extremos del muro ─────────────
+
+/**
+ * Corte de un extremo del muro: dónde termina cada cara, en coordenada u.
+ * Sin unión, el corte es perpendicular: uExt = uInt = 0 (inicio) o = longitud (fin).
+ */
+export interface EndCut {
+  readonly uExt: Meters;
+  readonly uInt: Meters;
+}
+
+const cross = (a: Vec2, b: Vec2) => a.x * b.y - a.y * b.x;
+const sub = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x - b.x, y: a.y - b.y });
+
+/** u en el que la cara n del muro corta la recta (c, dir). undefined si son paralelas. */
+function faceHitsLine(f: WallFrame, n: Meters, c: Vec2, dir: Vec2): Meters | undefined {
+  const den = cross(f.u, dir);
+  if (Math.abs(den) < 1e-12) return undefined;
+  return cross(sub(c, toWorld(f, 0, n)), dir) / den;
+}
+
+function faceIntersection(f: WallFrame, nf: Meters, g: WallFrame, ng: Meters): Vec2 | undefined {
+  const u = faceHitsLine(f, nf, toWorld(g, 0, ng), g.u);
+  return u === undefined ? undefined : toWorld(f, u, nf);
+}
+
+/** Por debajo de este ángulo, dos muros se consideran en línea y se cortan en recto. */
+const MIN_JOIN_SIN = Math.sin((5 * Math.PI) / 180);
+
+/** Inglete en L: la recta de corte es la diagonal del paralelogramo de caras que separa los dos muros. */
+function miterLine(f: WallFrame, g: WallFrame): [Vec2, Vec2] | undefined {
+  if (Math.abs(cross(f.u, g.u)) < MIN_JOIN_SIN) return undefined;
+  const a = toWorld(f, f.length / 2, 0); // un punto de cada muro, lejos de la unión
+  const b = toWorld(g, g.length / 2, 0);
+  const candidates: [Vec2 | undefined, Vec2 | undefined][] = [
+    [faceIntersection(f, f.faceExt, g, g.faceExt), faceIntersection(f, f.faceInt, g, g.faceInt)],
+    [faceIntersection(f, f.faceExt, g, g.faceInt), faceIntersection(f, f.faceInt, g, g.faceExt)],
+  ];
+  for (const [p, q] of candidates) {
+    if (!p || !q) continue;
+    const d = sub(q, p);
+    if (Math.hypot(d.x, d.y) < 1e-9) continue;
+    if (cross(d, sub(a, p)) * cross(d, sub(b, p)) < 0) return [p, q];
+  }
+  return undefined;
+}
+
+export function wallEndCuts(reader: ModelReader, wall: Wall, f: WallFrame): { start: EndCut; end: EndCut } {
+  const cuts: { start: EndCut; end: EndCut } = {
+    start: { uExt: 0, uInt: 0 },
+    end: { uExt: f.length, uInt: f.length },
+  };
+  const done = new Set<"start" | "end">();
+  for (const relId of reader.indices.relationsOf(wall.id)) {
+    const r = reader.getRelation(relId);
+    if (r?.kind !== "RelConnectsWalls") continue;
+
+    let myEnd: "start" | "end";
+    let otherId: Id;
+    let kind: "L" | "T";
+    if (r.wallA === wall.id) {
+      myEnd = r.endA;
+      otherId = r.wallB;
+      kind = r.endB === "middle" ? "T" : "L";
+    } else if (r.endB !== "middle") {
+      myEnd = r.endB;
+      otherId = r.wallA;
+      kind = "L";
+    } else continue; // soy la barra de una T: no me recorto
+    if (done.has(myEnd)) continue; // de momento, una unión por extremo
+
+    const other = getOfKind(reader, otherId, "Wall");
+    if (!other) continue;
+    const g = buildWallFrame(reader, other);
+    if (g.thickness <= TOLERANCE) continue;
+
+    let line: [Vec2, Vec2] | undefined;
+    if (kind === "L") {
+      line = miterLine(f, g);
+    } else {
+      // Tope en T: el muro llega hasta la cara de la barra que mira hacia él.
+      const side = toLocal(g, toWorld(f, f.length / 2, 0)).n;
+      const n = side >= 0 ? g.faceExt : g.faceInt;
+      line = [toWorld(g, 0, n), toWorld(g, 1, n)];
+    }
+    if (!line) continue;
+    const dir = sub(line[1], line[0]);
+    const uExt = faceHitsLine(f, f.faceExt, line[0], dir);
+    const uInt = faceHitsLine(f, f.faceInt, line[0], dir);
+    if (uExt === undefined || uInt === undefined) continue;
+
+    // Límite de seguridad: un ángulo muy cerrado no puede estirar el muro sin fin ni cruzar el otro extremo.
+    const reach = 4 * (f.thickness + g.thickness);
+    const clamp = (u: number) =>
+      myEnd === "start" ? Math.min(Math.max(u, -reach), f.length - TOLERANCE) : Math.max(Math.min(u, f.length + reach), TOLERANCE);
+    cuts[myEnd] = { uExt: clamp(uExt), uInt: clamp(uInt) };
+    done.add(myEnd);
+  }
+  return cuts;
+}
+
+/** u del corte a una profundidad n cualquiera (interpolación lineal entre las dos caras). */
+function cutAt(c: EndCut, f: WallFrame, n: Meters): Meters {
+  if (f.thickness <= TOLERANCE) return c.uExt;
+  return c.uExt + ((c.uInt - c.uExt) * (f.faceExt - n)) / f.thickness;
+}
+
 // ─── Muro ───────────────────────────────────────────────────
 
 function openingsOf(reader: ModelReader, wallId: Id): Opening[] {
@@ -159,17 +267,23 @@ export function buildWallPlan(reader: ModelReader, wall: Wall, opts: PlanOptions
   const openings = openingsOf(reader, wall.id);
   const cuts = openings.filter((o) => crossesCut(o, opts)).map((o) => [o.offsetAlongAxis, o.offsetAlongAxis + o.width] as [Meters, Meters]);
 
+  const ends = wallEndCuts(reader, wall, f);
   for (const [a, b] of solidSpans(f.length, cuts)) {
+    // Los tramos que tocan un extremo del muro usan el corte de la unión; los demás, corte recto.
+    const ua = (n: Meters) => (a <= TOLERANCE ? cutAt(ends.start, f, n) : a);
+    const ub = (n: Meters) => (b >= f.length - TOLERANCE ? cutAt(ends.end, f, n) : b);
     for (const l of f.layers) {
       prims.push({
         kind: "polygon",
-        points: [toWorld(f, a, l.nTop), toWorld(f, b, l.nTop), toWorld(f, b, l.nBottom), toWorld(f, a, l.nBottom)],
+        points: [toWorld(f, ua(l.nTop), l.nTop), toWorld(f, ub(l.nTop), l.nTop), toWorld(f, ub(l.nBottom), l.nBottom), toWorld(f, ua(l.nBottom), l.nBottom)],
         style: `capa:${l.materialId}`,
       });
     }
+    const e = f.faceExt;
+    const i = f.faceInt;
     prims.push({
       kind: "polyline",
-      points: [toWorld(f, a, f.faceExt), toWorld(f, b, f.faceExt), toWorld(f, b, f.faceInt), toWorld(f, a, f.faceInt), toWorld(f, a, f.faceExt)],
+      points: [toWorld(f, ua(e), e), toWorld(f, ub(e), e), toWorld(f, ub(i), i), toWorld(f, ua(i), i), toWorld(f, ua(e), e)],
       style: "muro:contorno",
     });
   }
