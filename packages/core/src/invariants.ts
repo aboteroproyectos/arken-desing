@@ -1,7 +1,7 @@
 // Reglas de integridad (Paso 1, §5), validadas sobre el "conjunto sucio" (Paso 2, §5.1).
 // El validador solo dice sí o no: las reparaciones (borrado en cascada) las hacen los comandos.
 
-import { BUILDING_ELEMENT_KINDS, FILLING_KINDS, TOLERANCE, relationParticipants } from "./model";
+import { FILLING_KINDS, LEVEL_ELEMENT_KINDS, TOLERANCE, relationParticipants } from "./model";
 import type { Id } from "./model";
 import { getOfKind, wallLength, type ModelReader } from "./queries";
 
@@ -29,6 +29,8 @@ export function expandTouched(reader: ModelReader, touched: Iterable<Id>): Set<I
   return out;
 }
 
+const finite = (p: { x: number; y: number }) => Number.isFinite(p.x) && Number.isFinite(p.y);
+
 export function validate(reader: ModelReader, touched: Iterable<Id>): InvariantViolation[] {
   const v: InvariantViolation[] = [];
   const idx = reader.indices;
@@ -52,8 +54,8 @@ export function validate(reader: ModelReader, touched: Iterable<Id>): InvariantV
     const e = reader.getEntity(id);
     if (!e) continue;
 
-    // 1. Todo elemento constructivo está en exactamente un nivel.
-    if (BUILDING_ELEMENT_KINDS.includes(e.kind)) {
+    // 1. Todo elemento dibujable (constructivo, espacio, red, anotación) está en exactamente un nivel.
+    if (LEVEL_ELEMENT_KINDS.includes(e.kind)) {
       const levels = idx.levelsOfElement(id);
       if (levels.size !== 1) {
         v.push({
@@ -62,6 +64,17 @@ export function validate(reader: ModelReader, touched: Iterable<Id>): InvariantV
           message: `El elemento debe pertenecer a exactamente un nivel (tiene ${levels.size}).`,
         });
       }
+    }
+
+    // 8. Geometría de los elementos libres: coordenadas finitas y mínimo de puntos.
+    if (e.kind === "Device" && !finite(e.position)) {
+      v.push({ rule: "device-position", entityIds: [id], message: "El dispositivo tiene una posición inválida." });
+    }
+    if ((e.kind === "Run" || e.kind === "Annotation") && (!e.points.every(finite) || e.points.length < (e.kind === "Run" ? 2 : 1))) {
+      v.push({ rule: "points-valid", entityIds: [id], message: "El recorrido o la anotación tiene puntos inválidos." });
+    }
+    if (e.kind === "Space" && (e.boundary.length < 3 || !e.boundary.every(finite))) {
+      v.push({ rule: "space-boundary", entityIds: [id], message: "El espacio necesita un contorno de al menos 3 puntos." });
     }
 
     if (e.kind === "Wall") {
