@@ -3,7 +3,13 @@
 // Los ids se generan al crear el comando, una sola vez, para que rehacer los conserve.
 
 import type {
+  Annotation,
+  Circuit,
+  Device,
   Door,
+  Run,
+  Sheet,
+  Space,
   Entity,
   Id,
   Meters,
@@ -274,6 +280,88 @@ export function deleteElements(ids: readonly Id[], opts: DeleteOptions = {}): Co
       ids.forEach(visit);
       for (const id of doomed) detach(tx, id);
       for (const id of doomed) tx.apply({ type: "deleteEntity", id });
+    },
+  };
+}
+
+// ─── Espacios, redes y anotaciones (Paso 7) ─────────────────
+
+/** Crea cualquier elemento libre (espacio, dispositivo, recorrido, anotación) en un nivel. */
+export function createLevelElement<E extends Space | Device | Run | Annotation>(
+  levelId: Id,
+  element: Omit<E, "id"> & { id?: Id },
+  label?: string,
+): Command & { readonly elementId: Id } {
+  const elementId = element.id ?? newId();
+  return {
+    label: label ?? labelFor(element.kind),
+    elementId,
+    execute(tx) {
+      must(getOfKind(tx, levelId, "Level"), "El nivel");
+      tx.apply({ type: "putEntity", entity: { ...element, id: elementId } as unknown as Entity });
+      addToLevel(tx, levelId, elementId);
+    },
+  };
+}
+
+function labelFor(kind: string): string {
+  return { Space: "Crear espacio", Device: "Insertar dispositivo", Run: "Trazar recorrido", Annotation: "Anotar" }[kind] ?? "Crear";
+}
+
+/** Crea una entidad sin nivel (circuito, hoja). */
+export function createEntity<E extends Circuit | Sheet>(element: Omit<E, "id"> & { id?: Id }, label = "Crear"): Command & { readonly elementId: Id } {
+  const elementId = element.id ?? newId();
+  return {
+    label,
+    elementId,
+    execute(tx) {
+      tx.apply({ type: "putEntity", entity: { ...element, id: elementId } as unknown as Entity });
+    },
+  };
+}
+
+const shift = (p: Vec2, d: Vec2): Vec2 => ({ x: p.x + d.x, y: p.y + d.y });
+
+/**
+ * Mueve cualquier selección: muros (con sus uniones), dispositivos, recorridos, espacios y anotaciones.
+ * Las puertas y ventanas no se mueven solas: acompañan a su muro.
+ */
+export function moveElements(ids: readonly Id[], delta: Vec2): Command {
+  return {
+    label: ids.length === 1 ? "Mover" : `Mover ${ids.length} elementos`,
+    execute(tx) {
+      const walls: Id[] = [];
+      for (const id of ids) {
+        const e = tx.getEntity(id);
+        if (!e) continue;
+        switch (e.kind) {
+          case "Wall":
+            walls.push(id);
+            tx.apply({ type: "putEntity", entity: { ...e, start: shift(e.start, delta), end: shift(e.end, delta) } });
+            break;
+          case "Device":
+            tx.apply({ type: "putEntity", entity: { ...e, position: shift(e.position, delta) } });
+            break;
+          case "Run":
+          case "Annotation":
+            tx.apply({ type: "putEntity", entity: { ...e, points: e.points.map((p) => shift(p, delta)) } as Entity });
+            break;
+          case "Space":
+            tx.apply({ type: "putEntity", entity: { ...e, boundary: e.boundary.map((p) => shift(p, delta)) } });
+            break;
+        }
+      }
+      if (walls.length > 0) reconnectWalls(tx, walls);
+    },
+  };
+}
+
+/** Carga varias entidades de una vez (importar un proyecto, pegar). */
+export function putEntities(entities: readonly Entity[], label = "Importar"): Command {
+  return {
+    label,
+    execute(tx) {
+      for (const e of entities) tx.apply({ type: "putEntity", entity: e });
     },
   };
 }

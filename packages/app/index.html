@@ -3,33 +3,51 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ARKEN · Planta</title>
+    <title>ARKEN DISEÑO</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <header class="toolbar">
-      <strong class="brand">ARKEN</strong>
+      <strong class="brand">ARKEN <span>DISEÑO</span></strong>
+      <div class="group">
+        <button id="lote01" title="Cargar el proyecto Casa Lote 01 · Bosque de Agua">Proyecto Lote 01</button>
+        <button id="new" title="Modelo nuevo de ejemplo">Nuevo</button>
+        <button id="open" title="Abrir un modelo .arken.json">Abrir</button>
+        <button id="save" title="Descargar el modelo como .arken.json">Guardar</button>
+        <input id="file" type="file" accept="application/json,.json" hidden />
+      </div>
+      <label class="group">Vista
+        <select id="view"></select>
+      </label>
+      <button id="fit" title="Ajustar a la ventana (Inicio)">Ajustar</button>
+      <div class="group" id="disciplines" aria-label="Disciplinas visibles"></div>
       <div class="group" role="toolbar" aria-label="Herramientas">
-        <button data-tool="select" title="Seleccionar (V)">Seleccionar <kbd>V</kbd></button>
+        <button data-tool="select" title="Seleccionar y mover (V)">Seleccionar <kbd>V</kbd></button>
         <button data-tool="wall" title="Muro (M)">Muro <kbd>M</kbd></button>
         <button data-tool="door" title="Puerta (P)">Puerta <kbd>P</kbd></button>
         <button data-tool="window" title="Ventana (N)">Ventana <kbd>N</kbd></button>
+        <button data-tool="device" title="Equipo o salida de red (E)">Equipo <kbd>E</kbd></button>
+        <button data-tool="run" title="Recorrido de tubería o canalización (R)">Recorrido <kbd>R</kbd></button>
+        <button data-tool="text" title="Texto (T)">Texto <kbd>T</kbd></button>
+        <button data-tool="dim" title="Cota (C)">Cota <kbd>C</kbd></button>
       </div>
-      <label class="group">Receta
-        <select id="layerset"></select>
-      </label>
+      <label class="group" hidden>Receta <select id="layerset"></select></label>
+      <select id="symbol" title="Símbolo a insertar" hidden></select>
+      <select id="system" title="Sistema del recorrido" hidden></select>
       <div class="group">
-        <button id="undo" title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
-        <button id="redo" title="Rehacer (Ctrl+Y)">↷ Rehacer</button>
+        <button id="undo" title="Deshacer (Ctrl+Z)">↶</button>
+        <button id="redo" title="Rehacer (Ctrl+Y)">↷</button>
       </div>
-      <div class="group">
-        <button id="save" title="Descargar el modelo como JSON">Guardar JSON</button>
-        <button id="open" title="Abrir un modelo JSON">Abrir JSON</button>
-        <input id="file" type="file" accept="application/json,.json" hidden />
+      <div class="group" aria-label="Exportar plano">
+        <button data-export="pdf" title="Imprimir o guardar como PDF vectorial a tamaño real">PDF / Imprimir</button>
+        <button data-export="png" title="Imagen PNG de alta resolución (≈200 ppp)">PNG</button>
+        <button data-export="svg" title="Plano vectorial SVG">SVG</button>
+        <button data-export="dxf" title="Plano para AutoCAD (DXF R12, mm de papel)">DXF</button>
       </div>
     </header>
     <main>
       <canvas id="plan"></canvas>
+      <aside id="panel" class="panel"></aside>
     </main>
     <footer class="status">
       <span id="hint"></span>

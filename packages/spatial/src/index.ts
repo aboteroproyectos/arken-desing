@@ -5,7 +5,7 @@
 
 import RBush from "rbush";
 import type { Id, Vec2 } from "@arken/core";
-import { arcPoints, type AABB2, type ElementPlanGeometry, type GeometryUpdate, type PlanPrimitive } from "@arken/geometry";
+import { arcPoints, textCorners, type AABB2, type ElementPlanGeometry, type GeometryUpdate, type PlanPrimitive } from "@arken/geometry";
 
 // ─── Índice genérico ────────────────────────────────────────
 
@@ -122,6 +122,10 @@ export function distanceToPrimitive(p: Vec2, prim: PlanPrimitive): number {
       const pts = arcPoints(prim, 1);
       return Math.min(Math.hypot(p.x - pts[0]!.x, p.y - pts[0]!.y), Math.hypot(p.x - pts[1]!.x, p.y - pts[1]!.y));
     }
+    case "text": {
+      const box = textCorners(prim);
+      return pointInPolygon(p, box) ? 0 : distToPolyline(p, box, true);
+    }
   }
 }
 
@@ -137,7 +141,7 @@ const boxContains = (outer: AABB2, inner: AABB2) =>
 
 /** ¿La primitiva toca el rectángulo? (fase fina de la selección por captura) */
 export function primitiveTouchesRect(prim: PlanPrimitive, r: AABB2): boolean {
-  const pts = prim.kind === "arc" ? arcPoints(prim) : prim.points;
+  const pts = prim.kind === "arc" ? arcPoints(prim) : prim.kind === "text" ? textCorners(prim) : prim.points;
   if (pts.some((p) => inBox(p, r))) return true;
   const corners: Vec2[] = [
     { x: r.minX, y: r.minY },
@@ -145,8 +149,8 @@ export function primitiveTouchesRect(prim: PlanPrimitive, r: AABB2): boolean {
     { x: r.maxX, y: r.maxY },
     { x: r.minX, y: r.maxY },
   ];
-  if (prim.kind === "polygon" && corners.some((c) => pointInPolygon(c, prim.points))) return true;
-  const closed = prim.kind === "polygon";
+  if ((prim.kind === "polygon" || prim.kind === "text") && corners.some((c) => pointInPolygon(c, pts))) return true;
+  const closed = prim.kind === "polygon" || prim.kind === "text";
   const segs = pts.length - (closed ? 0 : 1);
   for (let i = 0; i < segs; i++) {
     const a = pts[i]!;
@@ -233,7 +237,7 @@ export class SpatialIndexManager {
   }
 
   /** Clic en dos fases. Devuelve los aciertos ordenados por la regla de desempate (Paso 4, §5). */
-  pick(levelId: Id, p: Vec2, tolerance: number, exclude?: ReadonlySet<Id>): PickHit[] {
+  pick(levelId: Id, p: Vec2, tolerance: number, exclude?: ReadonlySet<Id>, accept?: (g: ElementPlanGeometry) => boolean): PickHit[] {
     const l = this.levels.get(levelId);
     if (!l) return [];
     // Fase gruesa: cajas que tocan un cuadrado alrededor del cursor.
@@ -243,12 +247,12 @@ export class SpatialIndexManager {
     for (const id of candidates) {
       if (exclude?.has(id)) continue;
       const g = this.geometry.get(id);
-      if (!g) continue;
+      if (!g || (accept && !accept(g))) continue;
       let d = Infinity;
       for (const prim of g.primitives) d = Math.min(d, distanceToPrimitive(p, prim));
       if (d <= tolerance) {
         const b = g.box;
-        hits.push({ elementId: id, distance: d, isHosted: g.kind !== "Wall", area: (b.maxX - b.minX) * (b.maxY - b.minY) });
+        hits.push({ elementId: id, distance: d, isHosted: g.kind !== "Wall" && g.kind !== "Space", area: (b.maxX - b.minX) * (b.maxY - b.minY) });
       }
     }
     // Desempate: alojados antes que su anfitrión, luego más cerca, luego más pequeño.
@@ -256,27 +260,29 @@ export class SpatialIndexManager {
   }
 
   /** Ventana (de izquierda a derecha): totalmente dentro. Captura (de derecha a izquierda): lo que toca. */
-  boxSelect(levelId: Id, r: AABB2, mode: "window" | "crossing"): Id[] {
+  boxSelect(levelId: Id, r: AABB2, mode: "window" | "crossing", accept?: (g: ElementPlanGeometry) => boolean): Id[] {
     const l = this.levels.get(levelId);
     if (!l) return [];
     const out: Id[] = [];
     for (const id of l.plan.search(r)) {
       const g = this.geometry.get(id);
-      if (!g) continue;
+      if (!g || (accept && !accept(g))) continue;
       if (mode === "window" ? boxContains(r, g.box) : g.primitives.some((prim) => primitiveTouchesRect(prim, r))) out.push(id);
     }
     return out;
   }
 
   /** Snap con prioridades: extremo > punto medio > sobre el eje > rejilla. */
-  snap(levelId: Id, p: Vec2, tolerance: number, opts: { exclude?: ReadonlySet<Id>; grid?: number } = {}): SnapResult | undefined {
+  snap(levelId: Id, p: Vec2, tolerance: number, opts: { exclude?: ReadonlySet<Id>; grid?: number; accept?: (g: ElementPlanGeometry) => boolean } = {}): SnapResult | undefined {
     const l = this.levels.get(levelId);
     const area = { minX: p.x - tolerance, minY: p.y - tolerance, maxX: p.x + tolerance, maxY: p.y + tolerance };
     const found: (SnapResult & { d: number })[] = [];
     if (l) {
       for (const id of l.snap.search(area)) {
         if (opts.exclude?.has(id)) continue;
-        for (const s of this.geometry.get(id)?.snapPoints ?? []) {
+        const sg = this.geometry.get(id);
+        if (sg && opts.accept && !opts.accept(sg)) continue;
+        for (const s of sg?.snapPoints ?? []) {
           const d = Math.hypot(s.point.x - p.x, s.point.y - p.y);
           if (d <= tolerance) found.push({ point: s.point, kind: s.kind, sourceIds: [id], d });
         }

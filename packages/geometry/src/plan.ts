@@ -7,6 +7,7 @@
 
 import {
   TOLERANCE,
+  type Discipline,
   getOfKind,
   wallDirection,
   wallLength,
@@ -20,21 +21,51 @@ import {
   type Window,
 } from "@arken/core";
 
+import { buildFreeElementPlan } from "./free";
+
 // ─── Tipos de salida ────────────────────────────────────────
 
 /** Estilo semántico; la vista decide colores, grosores y tramas. */
 export type StyleKey = string; // "capa:<materialId>", "muro:contorno", "simbolo:puerta", "oculto"...
 
+/**
+ * Pintura opcional de una primitiva (Paso 7). Grosores y trazos en mm de papel,
+ * para que el plano impreso tenga los grosores normalizados a cualquier escala.
+ */
+export interface Paint {
+  /** Color explícito; si falta, la vista usa el color de la disciplina del estilo. */
+  readonly color?: string;
+  /** "solid" rellena con el color; "white" tapa lo de debajo; "tint" rellena con un tono suave. */
+  readonly fill?: "solid" | "white" | "tint";
+  /** Grosor de línea en mm de papel. */
+  readonly weight?: number;
+  /** Patrón de trazo en mm de papel. */
+  readonly dash?: readonly number[];
+}
+
 export type PlanPrimitive =
-  | { readonly kind: "polygon"; readonly points: readonly Vec2[]; readonly style: StyleKey }
-  | { readonly kind: "polyline"; readonly points: readonly Vec2[]; readonly style: StyleKey }
-  | {
+  | ({ readonly kind: "polygon"; readonly points: readonly Vec2[]; readonly style: StyleKey } & Paint)
+  | ({ readonly kind: "polyline"; readonly points: readonly Vec2[]; readonly style: StyleKey } & Paint)
+  | ({
       readonly kind: "arc";
       readonly center: Vec2;
       readonly radius: Meters;
       /** Ángulos en radianes; el arco va en sentido antihorario de start a end. */
       readonly startAngle: number;
       readonly endAngle: number;
+      readonly style: StyleKey;
+    } & Paint)
+  | {
+      readonly kind: "text";
+      readonly at: Vec2;
+      readonly text: string;
+      /** Altura del texto en metros del modelo (ya convertida desde mm de papel). */
+      readonly height: Meters;
+      readonly align: "left" | "center" | "right";
+      /** Giro en radianes. */
+      readonly rotation?: number;
+      readonly bold?: boolean;
+      readonly color?: string;
       readonly style: StyleKey;
     };
 
@@ -52,7 +83,8 @@ export interface SnapPoint {
 
 export interface ElementPlanGeometry {
   readonly elementId: Id;
-  readonly kind: "Wall" | "Door" | "Window";
+  readonly kind: "Wall" | "Door" | "Window" | "Space" | "Device" | "Run" | "Annotation";
+  readonly discipline: Discipline;
   readonly levelId: Id;
   readonly primitives: readonly PlanPrimitive[];
   readonly box: AABB2;
@@ -64,9 +96,11 @@ export interface ElementPlanGeometry {
 export interface PlanOptions {
   /** Altura del plano de corte sobre la base del muro. Típico: 1.2 m. */
   readonly cutHeight: Meters;
+  /** Denominador de la escala de dibujo (50 = 1:50): fija el tamaño de símbolos y textos. */
+  readonly scale?: number;
 }
 
-export const DEFAULT_PLAN_OPTIONS: PlanOptions = { cutHeight: 1.2 };
+export const DEFAULT_PLAN_OPTIONS: PlanOptions = { cutHeight: 1.2, scale: 50 };
 
 // ─── Marco local del muro ───────────────────────────────────
 
@@ -366,6 +400,26 @@ export function arcPoints(p: Extract<PlanPrimitive, { kind: "arc" }>, segments =
   return pts;
 }
 
+/** Ancho aproximado de un texto: 0.62 × altura por carácter (fuente sans de la vista). */
+export function textWidth(t: { text: string; height: number; bold?: boolean }): number {
+  return t.text.length * t.height * (t.bold ? 0.66 : 0.6);
+}
+
+/** Las cuatro esquinas del rectángulo que ocupa un texto (en metros del modelo). */
+export function textCorners(t: Extract<PlanPrimitive, { kind: "text" }>): Vec2[] {
+  const w = textWidth(t);
+  const x0 = t.align === "left" ? 0 : t.align === "center" ? -w / 2 : -w;
+  const c = Math.cos(t.rotation ?? 0);
+  const s = Math.sin(t.rotation ?? 0);
+  const local: Vec2[] = [
+    { x: x0, y: -t.height * 0.5 },
+    { x: x0 + w, y: -t.height * 0.5 },
+    { x: x0 + w, y: t.height * 0.5 },
+    { x: x0, y: t.height * 0.5 },
+  ];
+  return local.map((p) => ({ x: t.at.x + p.x * c - p.y * s, y: t.at.y + p.x * s + p.y * c }));
+}
+
 export function boxOf(prims: readonly PlanPrimitive[]): AABB2 {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const add = (p: Vec2) => {
@@ -378,7 +432,8 @@ export function boxOf(prims: readonly PlanPrimitive[]): AABB2 {
     if (p.kind === "arc") {
       add(p.center);
       arcPoints(p).forEach(add);
-    } else p.points.forEach(add);
+    } else if (p.kind === "text") textCorners(p).forEach(add);
+    else p.points.forEach(add);
   }
   if (minX === Infinity) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   return { minX, minY, maxX, maxY };
@@ -388,7 +443,13 @@ export function boxOf(prims: readonly PlanPrimitive[]): AABB2 {
 
 export function buildElementPlan(reader: ModelReader, id: Id, opts: PlanOptions): ElementPlanGeometry | undefined {
   const e = reader.getEntity(id);
-  if (!e || (e.kind !== "Wall" && e.kind !== "Door" && e.kind !== "Window")) return undefined;
+  if (!e) return undefined;
+  if (e.kind === "Space" || e.kind === "Device" || e.kind === "Run" || e.kind === "Annotation") {
+    const levelId = reader.indices.levelOfElement(id);
+    if (!levelId) return undefined;
+    return buildFreeElementPlan(reader, e, levelId, opts);
+  }
+  if (e.kind !== "Wall" && e.kind !== "Door" && e.kind !== "Window") return undefined;
   const levelId = reader.indices.levelOfElement(id);
   if (!levelId) return undefined;
 
@@ -409,5 +470,5 @@ export function buildElementPlan(reader: ModelReader, id: Id, opts: PlanOptions)
     primitives = buildWindowPlan(reader, e, opts);
   }
   if (primitives.length === 0) return undefined;
-  return { elementId: id, kind: e.kind, levelId, primitives, box: boxOf(primitives), ...(axis ? { axis } : {}), snapPoints };
+  return { elementId: id, kind: e.kind, discipline: "ARQ", levelId, primitives, box: boxOf(primitives), ...(axis ? { axis } : {}), snapPoints };
 }
