@@ -41,7 +41,8 @@ import {
   type Wall,
 } from "@arken/core";
 import { PlanGeometryEngine, RUN_STYLES, SYMBOLS, buildWallFrame, toLocal } from "@arken/geometry";
-import { SPEC_FIELDS, buildLote01, checkSpec, defaultSpec, generateHouse, type HouseSpec } from "@arken/projects";
+import { FINISHES, SPEC_FIELDS, buildLote01, checkSpec, defaultSpec, finishProps, generateHouse, type FinishLevel, type HouseSpec, type RoomType } from "@arken/projects";
+import { showDesignAssistant } from "./assistant";
 import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, titleLogo, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
 import { calcReportHtml, type ReportChapter } from "@arken/calc";
@@ -918,9 +919,19 @@ function renderEntityPanel(e: Entity | undefined): void {
     case "Window":
       html += field("Ancho (m)", "frameWidth", e.frameWidth, "number", 'step="0.05"') + field("Alto (m)", "frameHeight", e.frameHeight, "number", 'step="0.05"');
       break;
-    case "Space":
+    case "Space": {
       html += field("Número", "number", e.number);
+      // Acabados: se eligen de la biblioteca (alto, lujo, premium) o se escriben.
+      const pp = e.properties ?? {};
+      const tipo = typeof pp["tipo_espacio"] === "string" ? (pp["tipo_espacio"] as RoomType) : undefined;
+      html += `</div><h3>Acabados</h3><div class="fields">`;
+      if (tipo && FINISHES.lujo[tipo]) html += `<label class="f"><span>Paquete de acabados</span><select id="finpack"><option value="">Elegir…</option><option value="alto">Alto</option><option value="lujo">Lujo</option><option value="premium">Premium</option></select></label>`;
+      for (const [k, label] of FIN_FIELDS) {
+        const opts = [...new Set(Object.values(FINISHES).flatMap((t) => Object.values(t).map((f) => String(f[FIN_KEY[k]!]))))].filter((x) => x && x !== "—");
+        html += `<label class="f"><span>${label}</span><input data-prop="${k}" data-type="text" list="dl-${k}" value="${esc(String(pp[k] ?? ""))}"><datalist id="dl-${k}">${opts.map((o) => `<option value="${esc(o)}">`).join("")}</datalist></label>`;
+      }
       break;
+    }
     case "Device": {
       const opts = [...SYMBOLS.values()].filter((d) => d.discipline === e.discipline).map((d) => `<option value="${d.key}" ${d.key === e.symbol ? "selected" : ""}>${esc(d.name)}</option>`).join("");
       html += `<label class="f"><span>Símbolo</span><select data-field="symbol">${opts}</select></label>`;
@@ -975,6 +986,13 @@ function renderEntityPanel(e: Entity | undefined): void {
       apply({ properties: next });
     }),
   );
+  panel.querySelector<HTMLSelectElement>("#finpack")?.addEventListener("change", (ev) => {
+    const lvl = (ev.target as HTMLSelectElement).value as FinishLevel;
+    const tipo = props["tipo_espacio"] as RoomType;
+    if (!lvl || !tipo) return;
+    const fin = finishProps(lvl, tipo, typeof props["altura_cielo_m"] === "number" ? (props["altura_cielo_m"] as number) : 2.7);
+    apply({ properties: { ...props, ...fin } }, `Acabados ${lvl} en ${e.kind === "Space" ? e.name : ""}`);
+  });
   panel.querySelector<HTMLButtonElement>("#addprop")?.addEventListener("click", () => {
     const k = (panel.querySelector("#newkey") as HTMLInputElement).value.trim();
     const raw = (panel.querySelector("#newval") as HTMLInputElement).value.trim();
@@ -1138,7 +1156,16 @@ $<HTMLButtonElement>("#lote01").addEventListener("click", () => {
   if (store.canUndo && !confirmReplace()) return;
   loadModel(buildLote01(), "Proyecto Casa Lote 01 · Bosque de Agua cargado.");
 });
-$<HTMLButtonElement>("#new").addEventListener("click", showSpecForm);
+$<HTMLButtonElement>("#new").addEventListener("click", () =>
+  showDesignAssistant({
+    load: (model, msg) => {
+      if (store.canUndo && !confirmReplace()) return false;
+      loadModel(model, msg);
+      return true;
+    },
+    openLote01Variant: showSpecForm,
+  }),
+);
 
 /** Proyecto nuevo por especificaciones: el diseño aprobado se ajusta a lo que pide el usuario. */
 function showSpecForm(): void {
@@ -1199,6 +1226,15 @@ function showSpecForm(): void {
   document.body.appendChild(box);
   box.dispatchEvent(new Event("input"));
 }
+const FIN_FIELDS: [string, string][] = [
+  ["acabado_piso", "Piso"],
+  ["acabado_guardaescoba", "Guardaescoba"],
+  ["acabado_muros", "Muros y pintura"],
+  ["acabado_enchape", "Enchapes y especiales"],
+  ["acabado_cielo", "Cielo"],
+];
+const FIN_KEY: Record<string, "piso" | "guardaescoba" | "muros" | "enchape" | "cielo"> = { acabado_piso: "piso", acabado_guardaescoba: "guardaescoba", acabado_muros: "muros", acabado_enchape: "enchape", acabado_cielo: "cielo" };
+
 function confirmReplace(): boolean {
   return window.confirm("Se reemplazará el modelo abierto. ¿Guardaste el JSON? Pulsa Aceptar para continuar.");
 }
