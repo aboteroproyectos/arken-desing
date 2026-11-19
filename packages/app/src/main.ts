@@ -151,15 +151,21 @@ store.subscribe((e: ChangeEvent) => {
   renderPanel();
   requestDraw();
   window.clearTimeout(autosaveTimer);
+  savedEl.classList.add("busy");
+  savedEl.textContent = "Guardando";
   autosaveTimer = window.setTimeout(autosave, 700);
 });
 
+const savedEl = $<HTMLSpanElement>("#saved");
 function autosave(): void {
+  let ok = true;
   try {
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(store.snapshot()));
   } catch {
-    /* almacenamiento lleno o bloqueado: el usuario puede guardar el JSON */
+    ok = false; /* almacenamiento lleno o bloqueado: el usuario puede guardar el JSON */
   }
+  savedEl.classList.remove("busy");
+  savedEl.textContent = ok ? "Guardado en el equipo" : "Use «Guardar»";
 }
 
 function validMode(): boolean {
@@ -240,7 +246,54 @@ function refreshViews(): void {
   if (g1.children.length) viewSelect.append(g1);
   viewSelect.append(g2);
   viewSelect.value = key;
+  refreshChrome();
 }
+
+// ─── Apariencia ARKEN: menú lateral de planos, cinta de resumen y proyecto activo ───
+function railItem(key: string, n: string, t: string, active: boolean): string {
+  return `<button class="nav-item${active ? " active" : ""}" data-view="${escHtml(key)}" title="${escHtml(`${n} · ${t}`)}"><span class="nav-n">${escHtml(n)}</span><span class="nav-t">${escHtml(t)}</span></button>`;
+}
+function escHtml(t: string): string {
+  return t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+}
+function refreshChrome(): void {
+  const railSheets = $<HTMLDivElement>("#rail-sheets");
+  const railLevels = $<HTMLDivElement>("#rail-levels");
+  const key = modeKey(mode);
+  const sheets = allSheets(store);
+  const lv = levels();
+  railSheets.innerHTML = sheets.map((sh) => railItem(`s:${sh.id}`, sh.number, sh.title, key === `s:${sh.id}`)).join("") || `<span class="muted small" style="padding:4px 10px">Sin planos</span>`;
+  railLevels.innerHTML = lv.map((l, i) => railItem(`l:${l.id}`, String(i).padStart(2, "0"), l.name ?? "Nivel", key === `l:${l.id}`)).join("");
+  railSheets.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+  const pr = projectEntity();
+  const label = projectLabel();
+  $<HTMLSpanElement>("#proj-name").textContent = label === "PROYECTO" ? "— sin proyecto —" : label;
+  let area = Number(pr?.properties?.["area_construida_m2"]) || 0;
+  if (!area) area = lv.reduce((t, l) => t + (Number(l.properties?.["area_construida_m2"]) || 0), 0);
+  const floors = lv.filter((l) => !/cubierta/i.test(l.name ?? "")).length;
+  let spaces = 0;
+  let elems = 0;
+  for (const e of store.entities()) {
+    if (e.kind === "Space") spaces++;
+    if (e.kind !== "Project" && e.kind !== "Level" && e.kind !== "Sheet") elems++;
+  }
+  const cur = mode.kind === "sheet" ? sheets.find((x) => x.id === (mode as { sheetId: string }).sheetId) : undefined;
+  const curL = mode.kind === "model" ? lv.find((l) => l.id === (mode as { levelId: string }).levelId) : undefined;
+  const cell = (lab: string, val: string, sub = "", cls = "") => `<div class="ledger-cell ${cls}"><span class="lab">${lab}</span><span class="val">${escHtml(val)}</span>${sub ? `<span class="sub">${escHtml(sub)}</span>` : ""}</div>`;
+  $<HTMLDivElement>("#ledger").innerHTML =
+    cell("Planos", String(sheets.length), "juego completo") +
+    cell("Pisos", String(floors), floors === 1 ? "un nivel" : `${floors} niveles`) +
+    cell("Área construida", area ? `${area.toLocaleString("es-CO", { maximumFractionDigits: 1 })} m²` : "—") +
+    cell("Espacios", String(spaces)) +
+    cell("Elementos BIM", elems.toLocaleString("es-CO")) +
+    cell(cur ? "Plano activo" : "Vista del modelo", cur ? `${cur.number} · ${cur.title}` : curL ? `${curL.name ?? "Nivel"} · todas las disciplinas` : "—", "", "total");
+}
+document.querySelector(".rail")!.addEventListener("click", (ev) => {
+  const k = (ev.target as HTMLElement).closest<HTMLElement>("[data-view]")?.dataset.view;
+  if (!k || k === modeKey(mode)) return;
+  viewSelect.value = k;
+  viewSelect.dispatchEvent(new Event("change"));
+});
 
 function refreshDisciplines(): void {
   discEl.innerHTML = "";

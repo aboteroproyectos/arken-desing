@@ -8,53 +8,68 @@
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <header class="toolbar">
-      <span class="brand"><img id="brand-logo" alt="ARKEN DISEÑO" /><span><b>ARKEN <span>DISEÑO</span></b><small>FAMILIA ARKEN 360</small></span></span>
-      <div class="group">
-        <button id="lote01" title="Cargar el proyecto Casa Lote 01 · Bosque de Agua">Proyecto Lote 01</button>
-        <button id="new" class="primary" title="Asistente de diseño: describa la casa, responda las preguntas y obtenga el diseño completo con todos sus planos">Diseñar casa</button>
-        <button id="open" title="Abrir un modelo .arken.json">Abrir</button>
-        <button id="save" title="Descargar el modelo como .arken.json">Guardar</button>
+    <header class="topbar">
+      <span class="brand"><img id="brand-logo" class="brand-mark" alt="ARKEN DISEÑO" /><span class="brand-txt"><span class="brand-name">ARKEN</span><span class="brand-sub">Diseño</span></span></span>
+      <span class="topbar-div"></span>
+      <div class="topbar-proj"><span class="lab">Proyecto activo</span><span class="val" id="proj-name">—</span></div>
+      <span class="tag-mode" title="Todo el diseño se calcula con reglas dentro del programa, sin conexión a inteligencia artificial">Sin IA</span>
+      <span class="saved" id="saved">Guardado</span>
+      <div class="topbar-actions">
+        <button id="lote01" class="btn" title="Cargar el proyecto Casa Lote 01 · Bosque de Agua">Proyecto Lote 01</button>
+        <button id="new" class="btn brass" title="Asistente de diseño: describa la casa, responda las preguntas y obtenga el diseño completo con todos sus planos">Diseñar casa</button>
+        <button id="open" class="btn" title="Abrir un modelo .arken.json">Abrir</button>
+        <button id="save" class="btn" title="Descargar el modelo como .arken.json">Guardar</button>
         <input id="file" type="file" accept="application/json,.json" hidden />
-      </div>
-      <label class="group">Vista
-        <select id="view"></select>
-      </label>
-      <button id="fit" title="Ajustar a la ventana (Inicio)">Ajustar</button>
-      <div class="group" id="disciplines" aria-label="Disciplinas visibles"></div>
-      <div class="group" role="toolbar" aria-label="Herramientas">
-        <button data-tool="select" title="Seleccionar y mover (V)">Seleccionar <kbd>V</kbd></button>
-        <button data-tool="wall" title="Muro (M)">Muro <kbd>M</kbd></button>
-        <button data-tool="door" title="Puerta (P)">Puerta <kbd>P</kbd></button>
-        <button data-tool="window" title="Ventana (N)">Ventana <kbd>N</kbd></button>
-        <button data-tool="device" title="Equipo o salida de red (E)">Equipo <kbd>E</kbd></button>
-        <button data-tool="run" title="Recorrido de tubería o canalización (R)">Recorrido <kbd>R</kbd></button>
-        <button data-tool="text" title="Texto (T)">Texto <kbd>T</kbd></button>
-        <button data-tool="dim" title="Cota (C)">Cota <kbd>C</kbd></button>
-      </div>
-      <label class="group" hidden>Receta <select id="layerset"></select></label>
-      <select id="symbol" title="Símbolo a insertar" hidden></select>
-      <select id="system" title="Sistema del recorrido" hidden></select>
-      <div class="group">
-        <button id="undo" title="Deshacer (Ctrl+Z)">↶</button>
-        <button id="redo" title="Rehacer (Ctrl+Y)">↷</button>
-      </div>
-      <div class="group" aria-label="Guardar y reportes">
-        <button id="package" class="primary" title="Guardar todos los planos (PDF y DXF), el juego completo, el modelo y las memorias en un paquete .zip">Guardar planos</button>
-        <button id="report" title="Ver y descargar las memorias de cálculo de cada diseño">Memorias</button>
-        <button id="topo" title="Leer el levantamiento del topógrafo, ver el terreno en 3D y ubicar la casa">Topografía</button>
-      </div>
-      <div class="group" aria-label="Exportar plano">
-        <button data-export="pdf" title="Plano activo en PDF vectorial a tamaño real">PDF</button>
-        <button data-export="png" title="Imagen PNG de alta resolución (≈200 ppp)">PNG</button>
-        <button data-export="svg" title="Plano vectorial SVG">SVG</button>
-        <button data-export="dxf" title="Plano activo para AutoCAD (DXF, mm de papel, capas por disciplina)">DXF</button>
+        <button id="report" class="btn" title="Ver y descargar las memorias de cálculo de cada diseño">Memorias</button>
+        <button id="topo" class="btn" title="Leer el levantamiento del topógrafo, ver el terreno en 3D y ubicar la casa">Topografía</button>
+        <button id="package" class="btn light" title="Guardar todos los planos (PDF y DXF), el juego completo, el modelo y las memorias en un paquete .zip">Guardar planos</button>
       </div>
     </header>
-    <main>
-      <canvas id="plan"></canvas>
-      <aside id="panel" class="panel"></aside>
-    </main>
+    <div class="ledger" id="ledger" aria-label="Resumen del proyecto"></div>
+    <div class="shell">
+      <nav class="rail" aria-label="Planos y vistas del modelo">
+        <div class="rail-head"><span class="eyebrow">Planos</span></div>
+        <div class="rail-list" id="rail-sheets"></div>
+        <div class="rail-head"><span class="eyebrow">Modelo</span></div>
+        <div class="rail-list" id="rail-levels"></div>
+        <div class="rail-foot"><span class="muted small">Diseño por reglas de arquitectura e ingeniería, sin conexión a inteligencia artificial.</span></div>
+      </nav>
+      <section class="stage">
+        <div class="toolstrip">
+          <label class="group view-pick">Vista <select id="view"></select></label>
+          <button id="fit" title="Ajustar a la ventana (Inicio)">Ajustar</button>
+          <div class="group" role="toolbar" aria-label="Herramientas">
+            <button data-tool="select" title="Seleccionar y mover (V)">Seleccionar <kbd>V</kbd></button>
+            <button data-tool="wall" title="Muro (M)">Muro <kbd>M</kbd></button>
+            <button data-tool="door" title="Puerta (P)">Puerta <kbd>P</kbd></button>
+            <button data-tool="window" title="Ventana (N)">Ventana <kbd>N</kbd></button>
+            <button data-tool="device" title="Equipo o salida de red (E)">Equipo <kbd>E</kbd></button>
+            <button data-tool="run" title="Recorrido de tubería o canalización (R)">Recorrido <kbd>R</kbd></button>
+            <button data-tool="text" title="Texto (T)">Texto <kbd>T</kbd></button>
+            <button data-tool="dim" title="Cota (C)">Cota <kbd>C</kbd></button>
+          </div>
+          <label class="group" hidden>Receta <select id="layerset"></select></label>
+          <select id="symbol" title="Símbolo a insertar" hidden></select>
+          <select id="system" title="Sistema del recorrido" hidden></select>
+          <div class="group">
+            <button id="undo" title="Deshacer (Ctrl+Z)">↶</button>
+            <button id="redo" title="Rehacer (Ctrl+Y)">↷</button>
+          </div>
+          <div class="group exports" aria-label="Exportar plano">
+            <span class="eyebrow">Exportar</span>
+            <button data-export="pdf" title="Plano activo en PDF vectorial a tamaño real">PDF</button>
+            <button data-export="png" title="Imagen PNG de alta resolución (≈200 ppp)">PNG</button>
+            <button data-export="svg" title="Plano vectorial SVG">SVG</button>
+            <button data-export="dxf" title="Plano activo para AutoCAD (DXF, mm de papel, capas por disciplina)">DXF</button>
+          </div>
+          <div class="group disc" id="disciplines" aria-label="Disciplinas visibles"></div>
+        </div>
+        <main>
+          <canvas id="plan"></canvas>
+          <aside id="panel" class="panel"></aside>
+        </main>
+      </section>
+    </div>
     <footer class="status">
       <span id="hint"></span>
       <span id="message" class="message"></span>
