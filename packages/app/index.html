@@ -39,11 +39,15 @@
         <button id="undo" title="Deshacer (Ctrl+Z)">↶</button>
         <button id="redo" title="Rehacer (Ctrl+Y)">↷</button>
       </div>
+      <div class="group" aria-label="Guardar y reportes">
+        <button id="package" class="primary" title="Guardar todos los planos (PDF y DXF), el juego completo, el modelo y las memorias en un paquete .zip">Guardar planos</button>
+        <button id="report" title="Ver y descargar las memorias de cálculo de cada diseño">Memorias</button>
+      </div>
       <div class="group" aria-label="Exportar plano">
-        <button data-export="pdf" title="Imprimir o guardar como PDF vectorial a tamaño real">PDF / Imprimir</button>
+        <button data-export="pdf" title="Plano activo en PDF vectorial a tamaño real">PDF</button>
         <button data-export="png" title="Imagen PNG de alta resolución (≈200 ppp)">PNG</button>
         <button data-export="svg" title="Plano vectorial SVG">SVG</button>
-        <button data-export="dxf" title="Plano para AutoCAD (DXF R12, mm de papel)">DXF</button>
+        <button data-export="dxf" title="Plano activo para AutoCAD (DXF, mm de papel, capas por disciplina)">DXF</button>
       </div>
     </header>
     <main>

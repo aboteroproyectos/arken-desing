@@ -43,9 +43,12 @@ import {
 } from "@arken/core";
 import { PlanGeometryEngine, RUN_STYLES, SYMBOLS, buildWallFrame, toLocal } from "@arken/geometry";
 import { buildLote01 } from "@arken/projects";
-import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, type SheetGeometry } from "@arken/sheets";
+import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, titleLogo, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
-import { download, printSvg, sheetDxf, sheetPng, sheetSvg } from "./export";
+import { calcReportHtml, type ReportChapter } from "@arken/calc";
+import { canvasMeasure, download, modelDxf, sheetDxf, sheetPdfPage, sheetPng, sheetSvg } from "./export";
+import { PdfDocument } from "./pdf";
+import { safeName, zip, type ZipEntry } from "./zip";
 import { onImageLoaded } from "./paint";
 import { PlanRenderer } from "./renderer";
 import { editableFilter, levelOfView, sheetOf, visibleGeoms, type ViewMode } from "./scene";
@@ -1095,12 +1098,8 @@ function fillPalettes(): void {
 }
 
 // Proyecto: guardar / abrir JSON, cargar el proyecto de referencia, empezar de cero.
-function slug(): string {
-  const p = [...store.entities()].find((e): e is Project => e.kind === "Project");
-  return (p?.titleBlock?.["archivo"] || p?.name || "arken-modelo").replace(/[^\w.-]+/g, "-");
-}
 $<HTMLButtonElement>("#save").addEventListener("click", () => {
-  download(`${slug()}.arken.json`, JSON.stringify(store.snapshot(), null, 2), "application/json").then(
+  download(`${arkenName("MODELO BIM")}.arken.json`, JSON.stringify(store.snapshot(), null, 2), "application/json").then(
     () => say("Modelo guardado.", true),
     (err: unknown) => say(err instanceof Error ? err.message : String(err)),
   );
@@ -1138,17 +1137,62 @@ function loadModel(model: BimModel, msg: string): void {
   say(msg, true);
 }
 
+// ─── Nombres de archivo: ARKEN DISENO-TIPO DE PLANO O DISEÑO-FECHA DE GUARDADO-NOMBRE DEL PROYECTO ──
+function today(): string {
+  const d = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+function projectEntity(): Project | undefined {
+  return [...store.entities()].find((e): e is Project => e.kind === "Project");
+}
+function projectLabel(): string {
+  const p = projectEntity();
+  return p?.titleBlock?.["proyecto"] || p?.name || "PROYECTO";
+}
+function arkenName(tipo: string): string {
+  return safeName(`ARKEN DISENO-${tipo.toUpperCase()}-${today()}-${projectLabel().toUpperCase()}`);
+}
+const sheetTipo = (s: Sheet) => `${s.number} ${s.title}`;
+const sheetItems = (s: Sheet) => visibleGeoms(store, engine.all(), { kind: "sheet", sheetId: s.id });
+
+/** Capítulos adicionales de las memorias (topografía, cuando hay levantamiento). */
+let extraChapters: () => ReportChapter[] = () => [];
+
+function reportHtml(): string {
+  const tb = projectEntity()?.titleBlock ?? {};
+  return calcReportHtml(store, { logo: titleLogo(tb), date: today(), extra: extraChapters() });
+}
+
+/** Descarga un DXF; si el visor no admite .dxf, lo entrega dentro de un .zip. */
+async function downloadDxf(name: string, text: string): Promise<void> {
+  try {
+    await download(`${name}.dxf`, text, "application/dxf");
+  } catch (err) {
+    if (!(err instanceof Error) || !/no permite/.test(err.message)) throw err;
+    await download(`${name}.zip`, new Blob([zip([{ name: `${name}.dxf`, data: text }])], { type: "application/zip" }));
+  }
+}
+
+async function sheetsPdf(sheets: readonly Sheet[], title: string): Promise<Uint8Array<ArrayBuffer>> {
+  const doc = new PdfDocument(canvasMeasure, title);
+  for (const s of sheets) await sheetPdfPage(doc, store, s, sheetGeometry(s), sheetItems(s));
+  return doc.build();
+}
+
 // Exportación del plano activo.
 async function exportSheet(kind: string): Promise<void> {
   const s = currentSheet();
   if (!s) return say("Elige un plano para exportarlo.");
   const geo = sheetGeometry(s);
   const items = visibleGeoms(store, engine.all(), mode);
-  const name = `${slug()}_${s.number}`;
+  const name = arkenName(sheetTipo(s));
   try {
     if (kind === "svg") await download(`${name}.svg`, sheetSvg(store, s, geo, items), "image/svg+xml");
-    else if (kind === "pdf") printSvg(sheetSvg(store, s, geo, items), s);
-    else if (kind === "dxf") await download(`${name}.dxf`, sheetDxf(store, s, geo, items), "application/dxf");
+    else if (kind === "pdf") {
+      say("Generando PDF…", true);
+      await download(`${name}.pdf`, new Blob([await sheetsPdf([s], `${s.number} ${s.title}`)], { type: "application/pdf" }));
+    } else if (kind === "dxf") await downloadDxf(name, sheetDxf(store, s, geo, items));
     else if (kind === "png") {
       say("Generando PNG…", true);
       await download(`${name}.png`, await sheetPng(store, s, geo, items, 8));
@@ -1158,6 +1202,76 @@ async function exportSheet(kind: string): Promise<void> {
     say(err instanceof Error ? err.message : String(err));
   }
 }
+
+/** Paquete completo: todos los planos (PDF y DXF), el juego de planos, el modelo en metros, las memorias y el modelo BIM. */
+async function savePackage(): Promise<void> {
+  const sheets = allSheets(store);
+  if (!sheets.length) return say("El proyecto no tiene planos para guardar.");
+  try {
+    const files: ZipEntry[] = [];
+    let i = 0;
+    for (const s of sheets) {
+      say(`Preparando plano ${++i} de ${sheets.length}: ${s.number}…`, true);
+      await new Promise((r) => setTimeout(r, 0));
+      const name = arkenName(sheetTipo(s));
+      files.push({ name: `PDF/${name}.pdf`, data: await sheetsPdf([s], `${s.number} ${s.title}`) });
+      files.push({ name: `DXF/${name}.dxf`, data: sheetDxf(store, s, sheetGeometry(s), sheetItems(s)) });
+    }
+    say("Uniendo el juego completo de planos…", true);
+    files.push({ name: `PDF/${arkenName("JUEGO COMPLETO DE PLANOS")}.pdf`, data: await sheetsPdf(sheets, `Juego de planos · ${projectLabel()}`) });
+    files.push({ name: `DXF/${arkenName("MODELO EN METROS")}.dxf`, data: modelDxf(store, engine.all()) });
+    files.push({ name: `MEMORIAS/${arkenName("MEMORIAS DE CALCULO")}.html`, data: reportHtml() });
+    files.push({ name: `MODELO/${arkenName("MODELO BIM")}.arken.json`, data: JSON.stringify(store.snapshot(), null, 2) });
+    for (const f of extraFiles()) files.push(f);
+    files.push({ name: "LEEME.txt", data: readme(sheets) });
+    const pkg = arkenName("PLANOS Y DISENOS");
+    await download(`${pkg}.zip`, new Blob([zip(files)], { type: "application/zip" }));
+    say(`Guardado: ${sheets.length} planos en PDF y DXF, juego completo, modelo en metros y memorias de cálculo.`, true);
+  } catch (err) {
+    say(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Archivos adicionales del paquete (topografía). */
+let extraFiles: () => ZipEntry[] = () => [];
+
+function readme(sheets: readonly Sheet[]): string {
+  return [
+    `ARKEN DISEÑO · ${projectLabel()}`,
+    `Guardado el ${today()}`,
+    "",
+    "PDF/      Cada plano a tamaño real de papel (vectorial) y el juego completo en un solo PDF.",
+    "DXF/      Cada plano para AutoCAD en mm de papel (escala 1:1 de impresión), capas por disciplina.",
+    "          MODELO EN METROS: todo el modelo en espacio modelo, en metros, capas DISCIPLINA-ELEMENTO.",
+    "MEMORIAS/ Memorias de cálculo de cada diseño (abrir en el navegador; se puede imprimir a PDF).",
+    "MODELO/   Modelo BIM editable de ARKEN DISEÑO (.arken.json).",
+    "",
+    "Planos:",
+    ...sheets.map((s) => `  ${s.number.padEnd(6)} ${s.title}`),
+    "",
+  ].join("\r\n");
+}
+
+// Memorias de cálculo: vista previa en la app y descarga.
+function showReport(): void {
+  const html = reportHtml();
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.innerHTML = `<div class="modal-card"><div class="modal-bar"><b>Memorias de cálculo</b><span></span><button class="primary" data-a="dl">Descargar</button><button data-a="x">Cerrar</button></div><iframe title="Memorias de cálculo"></iframe></div>`;
+  box.querySelector("iframe")!.srcdoc = html;
+  box.addEventListener("click", (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (ev.target === box || a === "x") box.remove();
+    if (a === "dl")
+      download(`${arkenName("MEMORIAS DE CALCULO")}.html`, html, "text/html").then(
+        () => say("Memorias de cálculo descargadas.", true),
+        (err: unknown) => say(err instanceof Error ? err.message : String(err)),
+      );
+  });
+  document.body.appendChild(box);
+}
+$<HTMLButtonElement>("#package").addEventListener("click", () => void savePackage());
+$<HTMLButtonElement>("#report").addEventListener("click", showReport);
 document.querySelectorAll<HTMLButtonElement>("[data-export]").forEach((b) => b.addEventListener("click", () => void exportSheet(b.dataset.export!)));
 
 // ─── Arranque ───────────────────────────────────────────────

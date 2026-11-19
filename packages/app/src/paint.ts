@@ -118,7 +118,7 @@ export function onImageLoaded(fn: () => void): void {
   imageListener = fn;
 }
 
-function imageFor(src: string): HTMLImageElement | undefined {
+export function imageFor(src: string): HTMLImageElement | undefined {
   let img = IMAGES.get(src);
   if (!img) {
     img = new Image();
@@ -249,6 +249,22 @@ export function primitivesToSvg(model: ModelReader, prims: Iterable<PlanPrimitiv
 
 // ─── DXF R12 (para AutoCAD / BricsCAD / LibreCAD) ───────────
 
+/** Color de AutoCAD (ACI) más cercano a un color hexadecimal, entre los 9 básicos. */
+function nearestAci(hex: string): number {
+  const m = hex.match(/^#([0-9a-f]{6})$/i);
+  if (!m) return 256;
+  const v = parseInt(m[1]!, 16);
+  const c = [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  const base: [number, number[]][] = [[1, [255, 0, 0]], [2, [255, 255, 0]], [3, [0, 255, 0]], [4, [0, 255, 255]], [5, [0, 0, 255]], [6, [255, 0, 255]], [7, [0, 0, 0]], [8, [128, 128, 128]], [9, [192, 192, 192]], [30, [255, 127, 0]], [34, [127, 63, 0]]];
+  let best = 7;
+  let bd = Infinity;
+  for (const [i, b] of base) {
+    const d = (b[0]! - c[0]!) ** 2 + (b[1]! - c[1]!) ** 2 + (b[2]! - c[2]!) ** 2;
+    if (d < bd) (bd = d), (best = i);
+  }
+  return best;
+}
+
 const ACI: Readonly<Record<string, number>> = { ARQ: 7, EST: 8, ELE: 1, ILU: 30, DOM: 6, HID: 5, SAN: 34, GAS: 2, SOL: 32, ROTULO: 7, FONDO: 9 };
 
 export interface DxfEntity {
@@ -257,7 +273,9 @@ export interface DxfEntity {
 }
 
 /** DXF ASCII R12 en mm de papel (escala 1:1 de impresión). */
-export function toDxf(model: ModelReader, items: Iterable<DxfEntity>, xf: { toPaper(p: Vec2): Vec2; mmPerM: number }): string {
+/** DXF ASCII R12. `widths` = grosor de polilínea en mm de papel (solo tiene sentido en espacio papel). */
+export function toDxf(model: ModelReader, items: Iterable<DxfEntity>, xf: { toPaper(p: Vec2): Vec2; mmPerM: number }, opts: { widths?: boolean } = {}): string {
+  const widths = opts.widths ?? true;
   const lines: string[] = [];
   const g = (code: number, v: string | number) => lines.push(String(code), typeof v === "number" ? n(v) : v);
   const layers = new Set<string>();
@@ -291,10 +309,14 @@ export function toDxf(model: ModelReader, items: Iterable<DxfEntity>, xf: { toPa
       const r = resolvePaint(model, prim);
       add(0, "POLYLINE");
       add(8, layer);
+      if (r.dash) add(6, r.dash[0]! <= 1.2 ? "DOT" : "HIDDEN");
+      if (prim.color) add(62, nearestAci(prim.color));
       add(66, 1);
       add(70, prim.kind === "polygon" ? 1 : 0);
-      add(40, r.weight);
-      add(41, r.weight);
+      if (widths) {
+        add(40, r.weight);
+        add(41, r.weight);
+      }
       for (const q of pts) {
         add(0, "VERTEX");
         add(8, layer);
@@ -312,10 +334,31 @@ export function toDxf(model: ModelReader, items: Iterable<DxfEntity>, xf: { toPa
   g(9, "$ACADVER");
   g(1, "AC1009");
   g(9, "$INSUNITS");
-  g(70, 4);
+  g(70, widths ? 4 : 6);
   g(0, "ENDSEC");
   g(0, "SECTION");
   g(2, "TABLES");
+  // Tipos de línea en mm de papel; en el DXF en metros se dejan a escala 1:50 (1 mm de papel = 0.05 m).
+  const k = widths ? 1 : 0.05;
+  const LT: [string, string, number[]][] = [
+    ["CONTINUOUS", "Solid line", []],
+    ["HIDDEN", "Hidden __ __ __", [3, -1.5]],
+    ["DOT", "Dot . . . .", [0.2, -1]],
+  ];
+  g(0, "TABLE");
+  g(2, "LTYPE");
+  g(70, LT.length);
+  for (const [name, desc, pat] of LT) {
+    g(0, "LTYPE");
+    g(2, name);
+    g(70, 0);
+    g(3, desc);
+    g(72, 65);
+    g(73, pat.length);
+    g(40, pat.reduce((t, x) => t + Math.abs(x), 0) * k);
+    for (const x of pat) g(49, x * k);
+  }
+  g(0, "ENDTAB");
   g(0, "TABLE");
   g(2, "LAYER");
   g(70, layers.size);

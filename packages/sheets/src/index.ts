@@ -210,10 +210,10 @@ function drawHeader(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y: num
     cx = x + 4 + lw + (w - 4 - lw) / 2;
   }
   p.text(F["empresa"] ?? "ARKEN 360", cx, y + h - 11, 8, "center", true, "#ffffff");
-  p.text(F["lema"] ?? "", cx, y + h - 18, 2.2, "center", false, BRAND_SOFT);
+  p.text(F["lema"] ?? "", cx, y + h - 19, 2.2, "center", false, BRAND_SOFT);
   const contact = [F["empresa_contacto"] ?? "", F["empresa_web"] ?? ""].filter(Boolean).join(" · ");
   if (contact) p.text(contact, cx, y + 4, 1.7, "center", false, BRAND_SOFT);
-  p.line([[cx - 22, y + h - 14.4], [cx + 22, y + h - 14.4]], { weight: 0.35, color: BRAND_GOLD });
+  p.line([[cx - 22, y + h - 16], [cx + 22, y + h - 16]], { weight: 0.35, color: BRAND_GOLD });
 }
 
 // ─── Tablas ──────────────────────────────────────────────────

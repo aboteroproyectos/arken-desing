@@ -97,3 +97,10 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; min-widt
   .panel { border-left: 0; border-top: 1px solid var(--line); }
   .status { flex-wrap: wrap; }
 }
+.modal { position: fixed; inset: 0; background: rgba(11, 21, 37, 0.55); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.modal-card { background: #fff; width: min(980px, 100%); height: min(92vh, 1100px); border-radius: 10px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35); }
+.modal-bar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--navy); color: #fff; border-bottom: 3px solid var(--gold); }
+.modal-bar span { flex: 1; }
+.modal-bar button { background: rgba(255, 255, 255, 0.08); color: #fff; border-color: rgba(217, 221, 228, 0.3); }
+.modal-bar button.primary { background: var(--gold); border-color: var(--gold); color: var(--navy-2); font-weight: 600; }
+.modal-card iframe { border: 0; width: 100%; height: 100%; }
