@@ -5,11 +5,11 @@
 import { BimStore, type BimModel, type Id, type Vec2 } from "@arken/core";
 import { circuitResults, serviceDemand } from "@arken/calc";
 import { ProjectBuilder, chain, newId, orthoPath, rect, v, type Props } from "../builder";
-import { completeProgram, ROOF_NAMES, type HouseProgram, type ProgramDraft } from "./program";
+import { completeProgram, GAS_NAMES, ROOF_NAMES, type HouseProgram, type ProgramDraft } from "./program";
 import { layoutHouse, stairGeometry, TREAD, type Layout, type Mod } from "./layout";
 import { finishProps, LUX, type RoomType } from "./finishes";
 import { STYLES, type StyleDef } from "./styles";
-import { buildComms, buildRain, buildSanitary, buildWater, type NetCtx } from "./networks";
+import { buildComms, buildGas, buildRain, buildSanitary, buildWater, type NetCtx } from "./networks";
 
 const PI = Math.PI;
 const R_W = -PI / 2; // contra el muro occidental (local: contra el muro del hall)
@@ -167,7 +167,8 @@ class Designer {
         medidor: "Medidor de energía clase 1, 120/240 V, con DPS tipo 1",
         tablero_TG: "Tablero general en el cuarto técnico, barraje de cobre, DPS tipo 2",
         unifilar_notas:
-          "Vivienda 100 % eléctrica (inducción, horno, calentador de acumulación y secadora eléctricos): no requiere red de gas.|Sistema de puesta a tierra único: varilla Cu 5/8\" × 2.40 m, R ≤ 25 Ω (RETIE), equipotencial con la estructura.|Protección diferencial GFCI en cocina, baños, ropas y exteriores; DPS tipo 2 en el tablero general.",
+          (p.gas === "no" ? "Vivienda 100 % eléctrica (inducción, horno, calentador de acumulación y secadora eléctricos): no requiere red de gas." : `Cocción, agua caliente, secadora y asador a gas (${GAS_NAMES[p.gas]}); el tablero solo alimenta su encendido y control.`) + "|Sistema de puesta a tierra único: varilla Cu 5/8\" × 2.40 m, R ≤ 25 Ω (RETIE), equipotencial con la estructura.|Protección diferencial GFCI en cocina, baños, ropas y exteriores; DPS tipo 2 en el tablero general.",
+        ...(p.gas === "no" ? {} : p.gas === "natural" ? { gas_pc_kwh_m3: 10.35, gas_densidad_rel: 0.62, gas_dp_max_mbar: 2.0, gas_suministro: GAS_NAMES[p.gas] } : { gas_pc_kwh_m3: 26.0, gas_densidad_rel: 1.52, gas_dp_max_mbar: 2.8, gas_presion_mbar: 28, gas_suministro: GAS_NAMES[p.gas] }),
         programa: JSON.stringify(p),
       },
     });
@@ -465,8 +466,8 @@ class Designer {
           const iu = Wd - 0.6 - 1.15;
           const il = Math.min(2.6, D - 1.2);
           this.dev("mueble", v(gx(iu), yc), rot(R_E), { ancho_m: round(il), fondo_m: 1.0, rotulo: "", carpinteria: "Isla de cocina con barra" });
-          this.dev("estufa", v(gx(iu), yc), rot(R_E), { tipo: "induccion" });
-        } else this.dev("estufa", v(gx(Wd), round(y1 - 0.6)), rot(R_E), { tipo: "induccion" });
+          this.dev("estufa", v(gx(iu), yc), rot(R_E), { tipo: this.p.gas === "no" ? "induccion" : "gas" });
+        } else this.dev("estufa", v(gx(Wd), round(y1 - 0.6)), rot(R_E), { tipo: this.p.gas === "no" ? "induccion" : "gas" });
         break;
       }
       case "comedor": {
@@ -817,7 +818,8 @@ class Designer {
           add(counter, "toma-gfci", perimeterPts(r, 4), 1.1, 500);
           special.push({ c: "", desc: "Nevera", v: 120, br: 20, awg: "12", tipo: "fijo", outs: [{ at: v(r.x0 + 0.15, r.y0 + 0.5), floor: r.floor, h: 0.6, va: 600, sym: "toma-especial", name: "Nevera" }] });
           special.push({ c: "", desc: "Lavavajillas", v: 120, br: 20, awg: "12", tipo: "fijo", outs: [{ at: v((r.x0 + r.x1) / 2, r.y0 + 0.15), floor: r.floor, h: 0.3, va: 1200, sym: "toma-especial", name: "Lavavajillas" }] });
-          special.push({ c: "", desc: "Cubierta de inducción 7.2 kW", v: 240, br: 40, awg: "8", tipo: "fijo", outs: [{ at: v((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2), floor: r.floor, h: 0.3, va: 7200, sym: "toma-240", name: "Cubierta de inducción" }] });
+          if (this.p.gas === "no") special.push({ c: "", desc: "Cubierta de inducción 7.2 kW", v: 240, br: 40, awg: "8", tipo: "fijo", outs: [{ at: v((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2), floor: r.floor, h: 0.3, va: 7200, sym: "toma-240", name: "Cubierta de inducción" }] });
+          else add(counter, "toma-gfci", [v((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)], 0.3, 180, "Encendido electrónico de la cubierta a gas");
           special.push({ c: "", desc: "Horno eléctrico 3.6 kW", v: 240, br: 20, awg: "12", tipo: "fijo", outs: [{ at: v(r.x0 + 0.15, r.y0 + 1.3), floor: r.floor, h: 0.6, va: 3600, sym: "toma-240", name: "Horno eléctrico" }] });
           break;
         case "bano":
@@ -827,8 +829,14 @@ class Designer {
         case "ropas":
           if (r.name === "Ropas") {
             special.push({ c: "", desc: "Lavadora y plancha", v: 120, br: 20, awg: "12", tipo: "lavanderia", outs: [{ at: v((r.x0 + r.x1) / 2, r.y0 + 0.15), floor: r.floor, h: 1.1, va: 1500, sym: "toma-gfci", name: "Lavadora" }] });
-            special.push({ c: "", desc: "Secadora eléctrica 5 kW", v: 240, br: 30, awg: "10", tipo: "fijo", outs: [{ at: v(r.x1 - 0.2, r.y0 + 0.15), floor: r.floor, h: 1.1, va: 5000, sym: "toma-240", name: "Secadora" }] });
-            special.push({ c: "", desc: "Calentador de acumulación 4.5 kW", v: 240, br: 30, awg: "10", tipo: "fijo", cont: true, outs: [{ at: v(r.x1 - 0.2, r.y1 - 0.2), floor: r.floor, h: 1.8, va: 4500, sym: "toma-240", name: "Calentador de agua" }] });
+            if (this.p.gas === "no") {
+              special.push({ c: "", desc: "Secadora eléctrica 5 kW", v: 240, br: 30, awg: "10", tipo: "fijo", outs: [{ at: v(r.x1 - 0.2, r.y0 + 0.15), floor: r.floor, h: 1.1, va: 5000, sym: "toma-240", name: "Secadora" }] });
+              special.push({ c: "", desc: "Calentador de acumulación 4.5 kW", v: 240, br: 30, awg: "10", tipo: "fijo", cont: true, outs: [{ at: v(r.x1 - 0.2, r.y1 - 0.2), floor: r.floor, h: 1.8, va: 4500, sym: "toma-240", name: "Calentador de agua" }] });
+            } else
+              special.push({ c: "", desc: "Secadora a gas y calentador de paso (motor, encendido y tiro forzado)", v: 120, br: 20, awg: "12", tipo: "fijo", outs: [
+                { at: v(r.x1 - 0.2, r.y0 + 0.15), floor: r.floor, h: 1.1, va: 600, sym: "toma-especial", name: "Secadora a gas" },
+                { at: v(r.x1 - 0.2, r.y1 - 0.2), floor: r.floor, h: 1.8, va: 200, sym: "toma-especial", name: "Calentador de paso a gas" },
+              ] });
           } else add(general, "toma", perimeterPts(r, 1), 0.3, 180);
           break;
         case "terraza":
@@ -942,6 +950,7 @@ class Designer {
     buildSanitary(c);
     buildRain(c);
     buildComms(c);
+    if (this.p.gas !== "no") buildGas(c);
   }
 
   // ─── Planos ─────────────────────────────────────────────────
@@ -1062,6 +1071,12 @@ class Designer {
       { type: "cuadro-lluvias", x: col.x, y: 330, w: col.w, h: 120 },
       { type: "notas", x: col.x, y: 112, w: col.w, h: 214, lines: N.SAN!.slice(5) },
     ]);
+    if (this.p.gas !== "no")
+      sheet("G-01", `Instalaciones de gas · ${GAS_NAMES[this.p.gas]}`, this.levels[0]!, ["GAS"], ["ARQ", "EST"], [
+        { type: "convenciones", x: col.x, y: 430, w: col.w, h: 115 },
+        { type: "cuadro-gas", x: col.x, y: 300, w: col.w, h: 126 },
+        { type: "notas", x: col.x, y: 112, w: col.w, h: 184, lines: N.GAS },
+      ]);
     let d = 0;
     this.levels.forEach((lvl, i) =>
       sheet(`D-${pad(++d)}`, `Comunicaciones, seguridad y domótica${fl(i)}`, lvl, ["DOM"], ["ARQ", "EST"], [
@@ -1146,7 +1161,7 @@ function notes(p: HouseProgram, st: StyleDef, lay: Layout): Record<string, strin
       "Diseño según NTC 1500 (Código colombiano de fontanería) y RAS. Caudales probables por el método de Hunter; velocidad máxima 1.8 m/s.",
       "Red interior en tubería multicapa PEX-AL-PEX con accesorios de compresión; agua caliente aislada con coquilla de espuma elastomérica 13 mm.",
       "Suministro: acometida PVC 1\" → medidor → tanque de reserva enterrado → equipo de presión con variador → montante MH en el hall.",
-      "Agua caliente: calentador eléctrico de acumulación en ropas; montante MC y retorno de recirculación RC con bomba temporizada (agua caliente inmediata en todos los baños).",
+      `Agua caliente: ${p.gas === "no" ? "calentador eléctrico de acumulación" : "calentador de paso a gas de 20 L/min, tiro forzado con ducto al exterior,"} en ropas; montante MC y retorno de recirculación RC con bomba temporizada (agua caliente inmediata en todos los baños).`,
       "Registro de corte por recinto húmedo; electroválvula general comandada por los sensores de inundación (ver D).",
       "Prueba hidrostática a 150 psi durante 2 horas antes de cerrar muros y placas. Desinfección con hipoclorito antes de la entrega.",
       "Alturas de salidas: lavamanos 0.55 m, sanitario 0.20 m, ducha 1.10 m (mezclador 1.20 m), lavaplatos 0.55 m, lavadora 1.10 m.",
@@ -1159,6 +1174,15 @@ function notes(p: HouseProgram, st: StyleDef, lay: Layout): Record<string, strin
       "Cocina con trampa de grasas antes de la red; sifón en cada aparato y rejilla de piso con sello hidráulico en baños y ropas.",
       "Aguas lluvias por red separada (método racional, i = 120 mm/h, C = 0.95): canales, bajantes BALL Ø4\", cajas de 50×50 cm y tanque de aprovechamiento para riego.",
       "Prueba de estanqueidad con columna de agua de 3 m durante 15 minutos antes de rellenar zanjas.",
+    ],
+    GAS: [
+      `Diseño según NTC 2505 (instalaciones para gas), NTC 3631 (ventilación de recintos) ${p.gas === "natural" ? "y la normativa del distribuidor" : "y NTC 3853 (GLP)"}. ${p.gas === "natural" ? "Gas natural en baja presión: 20 mbar a la salida del regulador." : "GLP en baja presión: regulador de 1.ª etapa en el suministro y de 2.ª etapa a 28 mbar a la entrada de la casa."}`,
+      p.gas === "natural" ? "Centro de medición en nicho de fachada con puerta ventilada, accesible desde el exterior." : p.gas === "tanque" ? "Tanque estacionario sobre base de concreto, a 3.00 m como mínimo de aberturas, linderos, sifones y fuentes de ignición, con acceso para el carrotanque." : "Caseta de pipetas exterior en mampostería, con puerta en malla, ventilación superior e inferior permanente, piso elevado y cilindros asegurados con cadena.",
+      "Línea matriz enterrada en PE 100 a 0.60 m con cinta de señalización amarilla; montante y ramales en PE-AL-PE por fachada y cielo raso. El ramal a la cocina va bajo piso dentro de camisa de PVC.",
+      "Diámetros por Renouard en baja presión con la caída máxima admisible en la ruta crítica (ver cuadro). Longitud equivalente 1.2 L por accesorios.",
+      "Válvula de corte de 1/4 de vuelta en cada artefacto. Electroválvula general comandada por los detectores de gas (domótica).",
+      "Calentador de paso tipo tiro forzado con ducto de evacuación al exterior; recintos con artefactos a gas con rejillas de ventilación permanente.",
+      "Prueba de hermeticidad a 1.5 veces la presión de operación y certificación de la instalación por organismo acreditado antes de dar servicio.",
     ],
     DOM: [
       "Cableado estructurado Cat 6A (ANSI/TIA-568) desde el rack del cuarto técnico; tubería conduit independiente de la red eléctrica (separación ≥ 0.30 m).",

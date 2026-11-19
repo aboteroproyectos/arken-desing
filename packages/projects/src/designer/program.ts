@@ -9,6 +9,14 @@ import { STYLES, type StyleKey } from "./styles";
 export type RoofType = "plana" | "una-agua" | "dos-aguas" | "cuatro-aguas";
 export type SizeLevel = "compacta" | "estandar" | "amplia";
 export type FinishLevel = "alto" | "lujo" | "premium";
+/** Suministro de gas: no (todo eléctrico), gas natural de red, GLP en tanque estacionario o GLP en cilindros (pipetas). */
+export type GasSupply = "no" | "natural" | "tanque" | "pipetas";
+export const GAS_NAMES: Record<GasSupply, string> = {
+  no: "sin gas (todo eléctrico)",
+  natural: "gas natural de red",
+  tanque: "GLP con tanque estacionario",
+  pipetas: "GLP con cuarto de pipetas",
+};
 
 export interface HouseProgram {
   readonly proyecto: string;
@@ -40,6 +48,8 @@ export interface HouseProgram {
   readonly loteFondo: number;
   readonly habitacionPrimerPiso: boolean;
   readonly servicio: boolean;
+  /** Red de gas y su suministro. */
+  readonly gas: GasSupply;
 }
 
 export type ProgramDraft = Partial<HouseProgram>;
@@ -71,6 +81,7 @@ export function defaultProgram(): HouseProgram {
     loteFondo: 0,
     habitacionPrimerPiso: false,
     servicio: false,
+    gas: "no",
   };
 }
 
@@ -164,6 +175,12 @@ export function parseDescription(text: string): ParseResult {
   else if (/\b(terraza|bbq|asador|patio)\b/.test(t) && !/terraza (plana|transitable)|cubierta (plana|en terraza)/.test(t)) (d.terraza = true), said.push("terraza");
   if (has("cuarto de servicio|alcoba de servicio|habitacion de servicio|servicio domestico")) (d.servicio = true), said.push("alcoba de servicio con baño");
   if (has("huespedes|habitacion en el primer piso|alcoba en el primer piso|habitacion abajo")) (d.habitacionPrimerPiso = true), said.push("habitación de huéspedes en el primer piso");
+
+  // Gas
+  if (/\b(sin gas|no (?:quiero|necesito|lleva) gas|todo electric[oa]|100 ?% electric[oa])/.test(t)) (d.gas = "no"), said.push("sin gas (todo eléctrico)");
+  else if (/\b(pipetas?|cilindros? de gas|bombonas?)\b/.test(t)) (d.gas = "pipetas"), said.push("gas GLP con cuarto de pipetas");
+  else if (/\b(tanque (?:estacionario|de gas|de glp)|glp|propano)\b/.test(t)) (d.gas = "tanque"), said.push("gas GLP con tanque estacionario");
+  else if (/\bgas\b/.test(t)) (d.gas = "natural"), said.push("gas natural");
 
   // Parqueaderos
   if (neg("garajes?|parqueaderos?|carros?|vehiculos?|carport")) (d.parqueaderos = 0), said.push("sin parqueadero");
@@ -284,6 +301,17 @@ export const QUESTIONS: readonly Question[] = [
   },
   { key: "estudio", text: "¿Incluye estudio u oficina en casa?", options: [{ label: "Sí", patch: { estudio: true } }, { label: "No", patch: { estudio: false } }] },
   { key: "estar", text: "¿Incluye un estar de TV o salón familiar?", options: [{ label: "Sí", patch: { estar: true } }, { label: "No", patch: { estar: false } }] },
+  {
+    key: "gas",
+    text: "¿La casa lleva red de gas?",
+    help: "Con gas: cubierta de cocción, calentador de paso, secadora y asador a gas. Sin gas: todo eléctrico (inducción y calentador de acumulación).",
+    options: [
+      { label: "Gas natural de la red", patch: { gas: "natural" } },
+      { label: "GLP con tanque estacionario", patch: { gas: "tanque" } },
+      { label: "GLP con cuarto de pipetas", patch: { gas: "pipetas" } },
+      { label: "Sin gas, todo eléctrico", patch: { gas: "no" } },
+    ],
+  },
   { key: "terraza", text: "¿Lleva terraza cubierta con BBQ junto a la sala?", options: [{ label: "Sí", patch: { terraza: true } }, { label: "No", patch: { terraza: false } }] },
   { key: "banoSocial", text: "¿Lleva baño social para visitas en el primer piso?", options: [{ label: "Sí", patch: { banoSocial: true } }, { label: "No", patch: { banoSocial: false } }], when: (d) => (d.pisos ?? 1) === 1 },
   { key: "habitacionPrimerPiso", text: "¿Quiere una habitación de huéspedes en el primer piso?", options: [{ label: "Sí", patch: { habitacionPrimerPiso: true } }, { label: "No", patch: { habitacionPrimerPiso: false } }], when: (d) => (d.pisos ?? 1) > 1 },
@@ -338,6 +366,7 @@ export function answerText(q: Question, text: string): ProgramDraft | undefined 
   }
   // Pregunta de opciones: se intenta leer como descripción libre.
   const p = parseDescription(text).draft;
+  if (q.key === "gas" && p.gas === undefined && /^no\b/.test(t)) return { gas: "no" };
   return p[q.key] !== undefined ? p : /^(si|claro|por supuesto|ok)\b/.test(t) && q.options[0] ? q.options[0].patch : /^no\b/.test(t) && q.options[1] ? q.options[1].patch : undefined;
 }
 
@@ -349,6 +378,7 @@ export function describeProgram(p: HouseProgram): string[] {
     `Cubierta ${ROOF_NAMES[p.cubierta]}${p.cubierta === "plana" ? "" : `, pendiente ${p.pendiente} %`}`,
     `Cocina ${p.cocina}${p.isla ? " con isla" : ""}${p.estudio ? " · estudio" : ""}${p.estar ? " · estar de TV" : ""}${p.terraza ? " · terraza con BBQ" : ""}`,
     p.parqueaderos ? `Parqueadero cubierto para ${p.parqueaderos} ${p.parqueaderos === 1 ? "vehículo" : "vehículos"}${p.cargadorEV ? " con cargador EV" : ""}` : "Sin parqueadero",
+    `Energía: ${p.gas === "no" ? "todo eléctrico, sin red de gas" : `red de gas, ${GAS_NAMES[p.gas]}`}`,
     `Espacios ${p.tamano === "amplia" ? "amplios" : p.tamano === "compacta" ? "compactos" : "estándar"} · acabados ${p.acabados}`,
   ];
   if (p.areaObjetivo) out.push(`Área construida buscada: ${p.areaObjetivo} m²`);

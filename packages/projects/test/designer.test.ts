@@ -42,6 +42,24 @@ describe("motor de diseño", () => {
     expect(pr.properties?.["cubierta_tipo"]).toBe(cubierta);
   });
 
+  it("redes hidrosanitarias, lluvias y comunicaciones con sus planos", () => {
+    const { sheets, store } = check({ pisos: 2, habitaciones: 4 });
+    const nums = sheets.map((s) => s.number);
+    for (const n of ["H-01", "H-02", "H-03", "S-01", "S-02", "S-03", "D-01", "D-02"]) expect(nums).toContain(n);
+    expect(nums).not.toContain("G-01");
+    const runs = [...store.entities()].filter((e) => e.kind === "Run");
+    for (const sys of ["PRI", "AF", "AC", "RC", "AN", "ALL", "DAT"]) expect(runs.some((r) => r.kind === "Run" && r.system === sys)).toBe(true);
+  });
+
+  it.each(["natural", "tanque", "pipetas"] as const)("red de gas con suministro %s", (gas) => {
+    const { sheets, store } = check({ pisos: 2, habitaciones: 4, gas });
+    expect(sheets.map((s) => s.number)).toContain("G-01");
+    const sym = { natural: "medidor-gas", tanque: "tanque-glp", pipetas: "pipetas" }[gas];
+    const ents = [...store.entities()];
+    expect(ents.some((e) => e.kind === "Device" && e.symbol === sym)).toBe(true);
+    expect(ents.filter((e) => e.kind === "Run" && e.system === "GAS").length).toBeGreaterThan(3);
+  });
+
   it("clósets y muebles en madera en todas las habitaciones", () => {
     const { review } = check({ pisos: 2, habitaciones: 5, servicio: true });
     const closets = review.items.filter((i) => i.item.endsWith("clóset"));
@@ -58,6 +76,13 @@ describe("motor de diseño", () => {
 });
 
 describe("descripción y preguntas", () => {
+  it("entiende el suministro de gas", () => {
+    expect(parseDescription("casa con gas natural").draft.gas).toBe("natural");
+    expect(parseDescription("cocina a gas con tanque estacionario").draft.gas).toBe("tanque");
+    expect(parseDescription("gas con cuarto de pipetas").draft.gas).toBe("pipetas");
+    expect(parseDescription("casa todo eléctrica, sin gas").draft.gas).toBe("no");
+  });
+
   it("entiende una descripción libre", () => {
     const { draft } = parseDescription("Quiero una casa campestre de dos pisos con 4 habitaciones, 3 baños, estudio, garaje para 2 carros y techo a dos aguas en un lote de 20 x 30, unos 320 m2");
     expect(draft).toMatchObject({ pisos: 2, habitaciones: 4, banos: 3, estudio: true, parqueaderos: 2, cubierta: "dos-aguas", loteFrente: 20, loteFondo: 30, areaObjetivo: 320 });

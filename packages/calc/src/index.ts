@@ -450,7 +450,7 @@ export function gasTable(reader: ModelReader, levelId?: Id): Table {
     rows,
     notes: [
       `Potencia instalada ${f(kwTotal, 1)} kW → ${f(kwTotal / pci, 2)} m³/h (PC ${f(pci, 2)} kWh/m³, densidad relativa ${f(s, 2)}). Le = 1.2 L por accesorios.`,
-      `Caída máxima admisible ${f(dpMax, 1)} mbar (10 % de 20 mbar). Ruta crítica: ${ok ? "CUMPLE" : "NO CUMPLE"}.`,
+      `Caída máxima admisible ${f(dpMax, 1)} mbar (10 % de ${f(projectNumber(reader, "gas_presion_mbar", 20), 0)} mbar). Ruta crítica: ${ok ? "CUMPLE" : "NO CUMPLE"}.`,
     ],
   };
 }

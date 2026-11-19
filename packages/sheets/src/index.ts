@@ -373,6 +373,10 @@ function legendProps(key: string, k: number): Record<string, number | string> {
       return { largo_m: s, ancho_m: s * 0.5, rotulo: "" };
     case "tanque":
       return { diametro_m: s * 0.6, rotulo: "" };
+    case "tanque-glp":
+      return { largo_m: s, diametro_m: s * 0.4, rotulo: "" };
+    case "pipetas":
+      return { ancho_m: s, fondo_m: s * 0.45, cilindros: 2, rotulo: "" };
   }
   return {};
 }

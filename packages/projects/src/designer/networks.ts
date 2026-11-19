@@ -14,7 +14,7 @@
 //    aprovechamiento.
 
 import type { Device, Id, Vec2 } from "@arken/core";
-import { hunterFlow } from "@arken/calc";
+import { hunterFlow, renouardDrop } from "@arken/calc";
 import { chain, orthoPath, v, type ProjectBuilder, type Props } from "../builder";
 import type { HouseProgram } from "./program";
 import type { Layout } from "./layout";
@@ -196,7 +196,8 @@ export function buildWater(c: NetCtx): void {
   const heater = v(r4(ropas.x1 - 0.35), r4(ropas.y1 - 0.35));
   const ucAC = all.reduce((t, f) => t + f.ucAC, 0);
   const tankHot = p.habitaciones >= 5 ? 300 : p.habitaciones >= 3 ? 200 : 150;
-  H("calentador-electrico", heater, 1.5, { uc_ac: 0 }, `Calentador eléctrico de acumulación ${tankHot} L, 4.5 kW, 240 V, con válvula de alivio y vaso de expansión`, "CAE");
+  if (p.gas === "no") H("calentador-electrico", heater, 1.5, { uc_ac: 0 }, `Calentador eléctrico de acumulación ${tankHot} L, 4.5 kW, 240 V, con válvula de alivio y vaso de expansión`, "CAE");
+  else H("calentador", heater, 1.5, { uc_ac: 0 }, "Calentador de paso a gas 20 L/min (36 kW), tiro forzado, ducto de evacuación al exterior, con válvula de alivio", "CAL");
   H("bomba-recirculacion", v(heater.x, r4(heater.y - 0.55)), 0.5, {}, "Bomba de recirculación de agua caliente 1/25 HP con temporizador y termostato");
   const hp = pipe(ucAC);
   run(b, "HID", "AF", orthoPath([v(mx, my), v(mx, r4(my - 0.25)), v(heater.x, r4(my - 0.25)), heater], "y"), { tramo: "AF-C Alimentación calentador", uc: r2(ucAC), di_mm: hp.di, diametro: hp.name }, `AF-C ${short(hp.name)}`);
@@ -551,4 +552,131 @@ export function buildComms(c: NetCtx): void {
   for (const [at, name] of cams) ext.push(D("camara", at, 2.6, name, 1));
   b.levelId = levels[0]!;
   run(b, "DOM", "DAT", orthoPath([rack, ...chain(rack, ext)], "x"), {}, "Cat 6A exterior (PoE)");
+}
+
+// ─── Gas ─────────────────────────────────────────────────────
+
+/** Calentador de agua: misma posición que en la red hidráulica (esquina interior de ropas). */
+function heaterAt(c: NetCtx): Vec2 {
+  const ropas = c.rooms.find((r) => r.name === "Ropas") ?? c.rooms.find((r) => r.type === "ropas") ?? c.rooms[0]!;
+  return v(r4(ropas.x1 - 0.35), r4(ropas.y1 - 0.35));
+}
+
+const GAS_IN: readonly [string, number][] = [
+  ["PE-AL-PE 1620", 16],
+  ["PE-AL-PE 2025", 20],
+  ["PE-AL-PE 2632", 26],
+  ["PE-AL-PE 3240", 32],
+];
+const GAS_UG: readonly [string, number][] = [
+  ["PE 100 SDR 11 Ø20 mm", 16.0],
+  ["PE 100 SDR 11 Ø25 mm", 20.4],
+  ["PE 100 SDR 11 Ø32 mm", 26.2],
+  ["PE 100 SDR 11 Ø40 mm", 32.6],
+];
+
+/**
+ * Red de gas (NTC 2505 / NTC 3631 / NTC 3853): suministro de gas natural (centro de medición), GLP en tanque
+ * estacionario o GLP en caseta de cilindros, línea matriz enterrada, montante por la fachada del lado de la cocina
+ * y ramales a cubierta de cocción, calentador de paso, secadora y asador. Diámetros por Renouard en baja presión.
+ */
+export function buildGas(c: NetCtx): void {
+  const { b, p, lay, levels, rooms } = c;
+  const { xa, xb, W, L } = lay;
+  const glp = p.gas !== "natural";
+  const pci = glp ? 26.0 : 10.35;
+  const dens = glp ? 1.52 : 0.62;
+  const dpMax = glp ? 2.8 : 2.0;
+  b.levelId = levels[0]!;
+  const kitchen = rooms.find((r) => r.type === "cocina" && r.floor === 1) ?? rooms.find((r) => r.type === "cocina");
+  const west = kitchen ? (kitchen.x0 + kitchen.x1) / 2 < W / 2 : true;
+  const mainX = west ? -0.45 : r4(W + 0.45);
+  // Artefactos
+  type App = { at: Vec2; kw: number; tag: string; name: string; h: number; out: Vec2 };
+  const apps: App[] = [];
+  const arq = [...b.store.entities()].filter((e): e is Device => e.kind === "Device" && e.discipline === "ARQ" && b.store.indices.levelOfElement(e.id) === levels[0]);
+  const stove = arq.find((d) => d.symbol === "estufa");
+  if (stove) apps.push({ at: stove.position, kw: 11, tag: "EST 11 kW", name: "Cubierta de cocción a gas 5 puestos (11 kW)", h: 0.6, out: v(r4(stove.position.x), r4(stove.position.y - 0.35)) });
+  const heater = heaterAt(c);
+  apps.push({ at: v(heater.x, r4(heater.y - 0.9)), kw: 36, tag: "CAL 36 kW", name: "Calentador de paso 20 L/min (36 kW), tiro forzado", h: 1.5, out: v(r4(heater.x - 0.25), heater.y) });
+  const dryer = arq.find((d) => d.symbol === "electrodomestico" && d.properties?.["rotulo"] === "SEC");
+  if (dryer) apps.push({ at: v(dryer.position.x, r4(dryer.position.y + 0.9)), kw: 6, tag: "SEC 6 kW", name: "Secadora de ropa a gas (6 kW)", h: 0.3, out: v(dryer.position.x, r4(dryer.position.y + 0.15)) });
+  const bbq = arq.find((d) => d.symbol === "mueble" && d.properties?.["rotulo"] === "BBQ");
+  if (bbq) apps.push({ at: v(bbq.position.x, r4(bbq.position.y - 0.9)), kw: 10, tag: "BBQ 10 kW", name: "Asador a gas de la terraza (10 kW)", h: 0.6, out: v(bbq.position.x, r4(bbq.position.y - 0.35)) });
+  const kwTot = apps.reduce((t, a) => t + a.kw, 0);
+  for (const a of apps) {
+    b.device("GAS", "artefacto-gas", a.at, a.h, { kw: a.kw, ocultar_rotulo: true }, { name: a.name, tag: a.tag });
+    b.device("GAS", "punto-gas", a.out, a.h, { ocultar_rotulo: true }, { name: `Salida ${a.name.split(" (")[0]!.toLowerCase()} con válvula de 1/4 de vuelta` });
+  }
+  // Suministro
+  const hx = (xa + xb) / 2;
+  const sx = r4(west ? hx - 2.9 : hx + 2.9);
+  const yIn = -1.2;
+  let src: Vec2;
+  let srcName: string;
+  if (p.gas === "natural") {
+    src = v(sx, -3.0);
+    b.device("GAS", "medidor-gas", src, 1.0, { ocultar_rotulo: true }, { name: `Centro de medición G${kwTot > 60 ? 10 : 6} en nicho de fachada: válvula de acometida, regulador de 2.ª etapa a 20 mbar y medidor` });
+    srcName = "Centro de medición";
+    b.note("GAS", "text", [v(sx, -3.75)], "ACOMETIDA DE GAS NATURAL DEL DISTRIBUIDOR", { align: "center" }, 1.6);
+  } else if (p.gas === "tanque") {
+    const big = kwTot > 45;
+    const gal = big ? 250 : 120;
+    src = v(sx, -5.4);
+    b.device("GAS", "tanque-glp", src, 0, { largo_m: big ? 2.45 : 1.9, diametro_m: big ? 0.95 : 0.76, rotulo: `GLP ${gal} gal` }, { name: `Tanque estacionario de GLP ${gal} gal (${big ? 946 : 454} L) sobre base de concreto, con regulador de 1.ª etapa, válvula de llenado, indicador de nivel y válvula de alivio`, tag: "TK-GLP" });
+    b.note("GAS", "dashed", [v(r4(sx - 3), r4(src.y + 3)), v(r4(sx + 3), r4(src.y + 3)), v(r4(sx + 3), r4(src.y - 3)), v(r4(sx - 3), r4(src.y - 3)), v(r4(sx - 3), r4(src.y + 3))], undefined, {});
+    b.note("GAS", "text", [v(sx, -6.4)], "RADIO DE SEGURIDAD 3.00 m: SIN ABERTURAS, FUENTES DE IGNICIÓN NI DESAGÜES", { align: "center" }, 1.4);
+    b.note("GAS", "text", [v(sx, -6.9)], "ACCESO VEHICULAR PARA EL LLENADO (MANGUERA ≤ 30 m)", { align: "center" }, 1.4);
+    srcName = "Tanque GLP";
+  } else {
+    const n = kwTot > 45 ? 4 : 2;
+    const w = 0.5 * n + 0.4;
+    src = v(sx, -3.8);
+    b.device("GAS", "pipetas", src, 0, { cilindros: n, ancho_m: w, fondo_m: 0.8, rotulo: `${n} × 100 lb` }, { name: `Caseta de pipetas de GLP: ${n} cilindros de 100 lb (${n / 2} en servicio + ${n / 2} de reserva), múltiple con regulador de cambio automático de 1.ª etapa, en mampostería con puerta en malla, ventilación superior e inferior y piso elevado`, tag: "CP-GLP" });
+    b.note("GAS", "text", [v(sx, -4.55)], "CUARTO DE PIPETAS EXTERIOR: VENTILACIÓN NATURAL PERMANENTE, A ≥ 1.0 m DE ABERTURAS Y ≥ 1.5 m DE FUENTES DE IGNICIÓN", { align: "center" }, 1.4);
+    srcName = "Caseta de pipetas";
+  }
+  const vg = v(sx, r4(yIn - 0.5));
+  b.device("GAS", "valvula-gas", vg, 0.5, { ocultar_rotulo: true }, { name: `Válvula de corte general de gas${glp ? " y regulador de 2.ª etapa a 28 mbar" : ""}` });
+  b.device("DOM", "valvula-motorizada", v(r4(sx + (west ? -0.5 : 0.5)), yIn), 0.5, { ocultar_rotulo: true }, { name: "Electroválvula de corte de gas (detectores de gas)" });
+  // Derivaciones sobre la matriz (ordenadas desde el suministro) y caudales acumulados.
+  type Tap = { y: number; app: App };
+  const taps: Tap[] = apps.map((a) => ({ y: a.at.y > L ? r4(Math.min(a.at.y, L + 3.0)) : a.out.y, app: a })).sort((a2, b2) => a2.y - b2.y);
+  const yEnd = taps.length ? taps[taps.length - 1]!.y : 0;
+  // Longitud de la ruta crítica para fijar la caída admisible por metro.
+  const far = taps[taps.length - 1];
+  const lcrit = Math.abs(src.y - yIn) + Math.abs(sx - mainX) + Math.abs(yEnd - yIn) + (far ? Math.abs(far.app.out.x - mainX) + 1.5 : 0);
+  const perM = (dpMax * 0.9) / (lcrit * 1.2);
+  const size = (kw: number, list: readonly [string, number][]) => {
+    const q = kw / pci;
+    return list.find(([, di]) => renouardDrop(dens, 1, q, di) <= perM) ?? list[list.length - 1]!;
+  };
+  let g = 0;
+  const G = (pts: Vec2[], kw: number, list: readonly [string, number][], tramo: string, crit: boolean, vert = 0) => {
+    const [name, di] = size(kw, list);
+    g++;
+    run(b, "GAS", "GAS", pts, { tramo: `G-${g} ${tramo}`, kw: r2(kw), di_mm: di, diametro: name, ruta_critica: crit, ...(vert ? { vertical_m: vert } : {}) }, `G-${g} ${name.replace("PE-AL-PE ", "").replace("PE 100 SDR 11 ", "PE ")}`);
+  };
+  b.levelId = levels[0]!;
+  G([src, v(sx, yIn), v(mainX, yIn)], kwTot, GAS_UG, `${srcName} → fachada (enterrada a 0.60 m)`, true, 0.6);
+  let prev = yIn;
+  let rest = kwTot;
+  for (let i = 0; i < taps.length; i++) {
+    const t = taps[i]!;
+    if (t.y > prev + 0.01) G([v(mainX, prev), v(mainX, t.y)], rest, GAS_IN, `Matriz por fachada → ${t.app.tag.split(" ")[0]}`, true);
+    const a = t.app;
+    const pts = a.at.y > L ? [v(mainX, t.y), v(a.out.x, t.y), a.out] : [v(mainX, t.y), v(a.out.x, t.y), a.out];
+    G(pts, a.kw, GAS_IN, `Ramal ${a.name.split(" (")[0]!.toLowerCase()}`, i === taps.length - 1, Math.max(0, a.h - 0.3));
+    rest -= a.kw;
+    prev = Math.max(prev, t.y);
+  }
+  // Seguridad y ventilación de los recintos con artefactos a gas
+  const glpH = glp ? 0.3 : 2.5;
+  const ropas = rooms.find((r) => r.name === "Ropas");
+  for (const r of [kitchen, ropas]) {
+    if (!r) continue;
+    b.device("DOM", "detector-gas", v(r4(west ? r.x0 + 0.3 : r.x1 - 0.3), r4(r.y0 + 0.6)), glpH, { ocultar_rotulo: true }, { name: `Detector de gas ${r.name.toLowerCase()} (${glp ? "a 0.30 m del piso: el GLP es más pesado que el aire" : "a 0.30 m del techo: el gas natural es más liviano que el aire"})` });
+    b.device("GAS", "rejilla-ventilacion", v(r4(west ? r.x0 + 0.06 : r.x1 - 0.06), r4((r.y0 + r.y1) / 2)), glp ? 0.15 : 2.4, { ocultar_rotulo: true }, { name: `Rejilla de ventilación permanente ${r.name.toLowerCase()} (NTC 3631)`, rot: Math.PI / 2 } as never);
+  }
+  void xb;
 }
