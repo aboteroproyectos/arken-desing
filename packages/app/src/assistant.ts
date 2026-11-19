@@ -22,7 +22,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 
 export interface AssistantHost {
   /** Carga el modelo diseñado en el editor (pide confirmación si hay cambios). Devuelve false si el usuario cancela. */
-  load(model: BimModel, msg: string): boolean;
+  load(model: BimModel, msg: string): Promise<boolean>;
   /** Abre el formulario anterior para variantes de la casa Lote 01. */
   openLote01Variant(): void;
 }
@@ -89,7 +89,7 @@ export function showDesignAssistant(host: AssistantHost): void {
     render();
   };
 
-  box.addEventListener("click", (ev) => {
+  box.addEventListener("click", async (ev) => {
     const t = ev.target as HTMLElement;
     const a = t.closest<HTMLElement>("[data-a]")?.dataset.a;
     const q = nextQuestion(draft);
@@ -123,7 +123,7 @@ export function showDesignAssistant(host: AssistantHost): void {
         const rv = reviewDesign(r);
         const p = r.program;
         const area = r.layout.W * r.layout.L * p.pisos;
-        if (!host.load(r.model, `Casa diseñada: ${STYLES[p.estilo].name}, ${p.pisos} ${p.pisos === 1 ? "piso" : "pisos"}, ${area.toFixed(0)} m². ${rv.summary}`)) return;
+        if (!(await host.load(r.model, `Casa diseñada: ${STYLES[p.estilo].name}, ${p.pisos} ${p.pisos === 1 ? "piso" : "pisos"}, ${area.toFixed(0)} m². ${rv.summary}`))) return;
         box.remove();
         showReview(rv, `${p.proyecto} · ${STYLES[p.estilo].name} · ${area.toFixed(0)} m²`);
       } catch (err) {

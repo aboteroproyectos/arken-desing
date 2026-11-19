@@ -167,3 +167,6 @@ button.link { background: none; border: 0; color: #1d5fa8; cursor: pointer; padd
 .review-list .ok .ic { color: #2c6e49; } .review-list .aviso .ic { color: #b8860b; } .review-list .falla .ic { color: #c4372b; }
 .review-list li span:last-child { color: #4a4f57; }
 @media (max-width: 760px) { .assist-body { grid-template-columns: 1fr; } .assist-side { border-left: 0; border-top: 1px solid #e1e4e9; } }
+.modal.confirm { z-index: 60; }
+.modal-card.ask { width: min(460px, 100%); height: auto; }
+.ask-body { padding: 14px 16px; }

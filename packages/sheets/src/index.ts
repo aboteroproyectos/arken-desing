@@ -379,20 +379,28 @@ function legendProps(key: string, k: number): Record<string, number | string> {
 
 // ─── Notas ───────────────────────────────────────────────────
 
-function drawNotes(p: Pen, b: SheetBlock): void {
-  let y = b.y + b.h - 4;
-  p.text(b.title ?? "NOTAS", b.x, y, 2.4, "left", true, BRAND);
-  y -= 4.5;
-  const maxChars = Math.floor(b.w / 1.08);
-  (b.lines ?? []).forEach((n, i) => {
-    const lines = wrap(n, maxChars - 4);
+/** Notas: el tamaño de la letra sigue al del rótulo (`f`); si no caben en el bloque, se reduce hasta que quepan. */
+function drawNotes(p: Pen, b: SheetBlock, f0 = 1): void {
+  const layout = (f: number) => {
+    const maxChars = Math.max(12, Math.floor(b.w / (1.08 * f)) - 4);
+    const rows = (b.lines ?? []).map((n) => wrap(n, maxChars));
+    const h = 4 * f + 4.5 * f + rows.reduce((a, r) => a + r.length * 2.75 * f + 0.6 * f, 0);
+    return { rows, h };
+  };
+  let f = Math.max(0.5, f0);
+  let L = layout(f);
+  while (L.h > b.h && f > 0.55) L = layout((f -= 0.05));
+  let y = b.y + b.h - 4 * f;
+  p.text(b.title ?? "NOTAS", b.x, y, 2.4 * f, "left", true, BRAND);
+  y -= 4.5 * f;
+  L.rows.forEach((lines, i) => {
     lines.forEach((l, j) => {
       if (y < b.y + 1) return;
-      p.text(j === 0 ? `${i + 1}.` : "", b.x, y, 1.75);
-      p.text(l, b.x + 4, y, 1.75);
-      y -= 2.75;
+      p.text(j === 0 ? `${i + 1}.` : "", b.x, y, 1.75 * f);
+      p.text(l, b.x + 4 * f, y, 1.75 * f);
+      y -= 2.75 * f;
     });
-    y -= 0.6;
+    y -= 0.6 * f;
   });
 }
 
@@ -702,6 +710,8 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
     hd = headerLayout(reader, sheet, colW0, ts);
     tb = titleBlockLayout(reader, sheet, colW0, ts);
   }
+  // Las notas de la columna crecen con el texto del rótulo (sin la reducción por espacio).
+  const notesScale = Math.min(5, Math.max(0.7, Number(F["rotulo_texto"]) || 1));
   const headerH0 = 30;
   const tbH0 = 96;
   const headerH = hd.h;
@@ -738,7 +748,7 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
           ? { ...b0, x: colX + (b0.x - colX0) * s, w: b0.w * s, y: ny0 + (b0.y - y0) * fv, h: b0.h * fv }
           : { ...b0, x: vp0.x + (b0.x - vp0.x) * fhx, w: b0.w * fhx };
     if (b.type === "convenciones") drawLegend(p, reader, sheet, b);
-    else if (b.type === "notas") drawNotes(p, b);
+    else if (b.type === "notas") drawNotes(p, b, b.x >= colX0 - 1 ? notesScale : 1);
     else if (b.type === "unifilar") drawSingleLine(p, reader, b);
     else if (b.type === "fachadas") (projectHas(reader, "cubierta_tipo") ? drawStyledElevations(p, reader, b) : drawElevations(p, reader, sheet, b));
     else if (b.type === "cortes") drawSections(p, reader, b);

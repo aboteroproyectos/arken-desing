@@ -818,7 +818,7 @@ function renderTitlePanel(): void {
   const esc0 = Number(tb["rotulo_escala"]) || 1;
   html += `<label class="f"><span>Tamaño del rótulo</span><span class="range"><input data-field="rotulo_escala" type="range" min="0.8" max="1.6" step="0.05" value="${esc0}"><b>${Math.round(esc0 * 100)} %</b></span></label>`;
   const tx0 = Number(tb["rotulo_texto"]) || 1;
-  html += `<label class="f"><span>Texto del rótulo</span><span class="range"><input data-field="rotulo_texto" type="range" min="0.7" max="5" step="0.1" value="${tx0}"><b>${Math.round(tx0 * 100)} %</b></span></label>`;
+  html += `<label class="f"><span>Texto del rótulo y notas</span><span class="range"><input data-field="rotulo_texto" type="range" min="0.7" max="5" step="0.1" value="${tx0}"><b>${Math.round(tx0 * 100)} %</b></span></label>`;
   const tp0 = Number(tb["texto_planos"]) || 1;
   html += `<label class="f"><span>Texto de los planos</span><span class="range"><input data-field="texto_planos" type="range" min="0.5" max="5" step="0.1" value="${tp0}"><b>${Math.round(tp0 * 100)} %</b></span></label>`;
   const logo = (tb["logo"] ?? "").trim();
@@ -1152,14 +1152,14 @@ fileInput.addEventListener("change", async () => {
   }
   fileInput.value = "";
 });
-$<HTMLButtonElement>("#lote01").addEventListener("click", () => {
-  if (store.canUndo && !confirmReplace()) return;
+$<HTMLButtonElement>("#lote01").addEventListener("click", async () => {
+  if (store.canUndo && !(await confirmReplace())) return;
   loadModel(buildLote01(), "Proyecto Casa Lote 01 · Bosque de Agua cargado.");
 });
 $<HTMLButtonElement>("#new").addEventListener("click", () =>
   showDesignAssistant({
-    load: (model, msg) => {
-      if (store.canUndo && !confirmReplace()) return false;
+    load: async (model, msg) => {
+      if (store.canUndo && !(await confirmReplace())) return false;
       loadModel(model, msg);
       return true;
     },
@@ -1203,7 +1203,7 @@ function showSpecForm(): void {
     msg.textContent = errs.length ? errs.join(" ") : `Casa de ${(s.ancho * s.largo).toFixed(1)} m² construidos (${s.ancho.toFixed(2)} × ${s.largo.toFixed(2)} m).`;
     msg.classList.toggle("bad", errs.length > 0);
   });
-  box.addEventListener("click", (ev) => {
+  box.addEventListener("click", async (ev) => {
     const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
     if (ev.target === box || a === "x") return box.remove();
     if (a !== "go") return;
@@ -1214,7 +1214,7 @@ function showSpecForm(): void {
       msg.classList.add("bad");
       return;
     }
-    if (store.canUndo && !confirmReplace()) return;
+    if (store.canUndo && !(await confirmReplace())) return;
     try {
       loadModel(generateHouse(s), `Proyecto generado: ${s.proyecto} · ${(s.ancho * s.largo).toFixed(1)} m², 11 planos con todas las redes.`);
       box.remove();
@@ -1235,8 +1235,21 @@ const FIN_FIELDS: [string, string][] = [
 ];
 const FIN_KEY: Record<string, "piso" | "guardaescoba" | "muros" | "enchape" | "cielo"> = { acabado_piso: "piso", acabado_guardaescoba: "guardaescoba", acabado_muros: "muros", acabado_enchape: "enchape", acabado_cielo: "cielo" };
 
-function confirmReplace(): boolean {
-  return window.confirm("Se reemplazará el modelo abierto. ¿Guardaste el JSON? Pulsa Aceptar para continuar.");
+/** Confirmación dentro de la página: la vista publicada no permite los cuadros del navegador (window.confirm). */
+function confirmReplace(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const box = document.createElement("div");
+    box.className = "modal confirm";
+    box.innerHTML = `<div class="modal-card ask"><div class="modal-bar"><b>Reemplazar el proyecto abierto</b></div><div class="ask-body"><p>Se reemplazará el modelo abierto por el nuevo. Si quiere conservarlo, guárdelo antes con <b>Guardar</b>.</p><div class="assist-row"><button class="primary" data-ok="1">Continuar</button><button data-ok="0">Cancelar</button></div></div></div>`;
+    box.addEventListener("click", (ev) => {
+      const ok = (ev.target as HTMLElement).closest<HTMLElement>("[data-ok]")?.dataset.ok;
+      if (ok === undefined && ev.target !== box) return;
+      box.remove();
+      resolve(ok === "1");
+    });
+    document.body.appendChild(box);
+    box.querySelector<HTMLButtonElement>("[data-ok='1']")!.focus();
+  });
 }
 function loadModel(model: BimModel, msg: string): void {
   tool.cancel();
