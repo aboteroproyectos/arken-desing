@@ -12,7 +12,6 @@ import {
   DISCIPLINE_NAMES,
   PAPER_MM,
   createLevelElement,
-  createStarterModel,
   createWall,
   deleteElements,
   getOfKind,
@@ -42,7 +41,7 @@ import {
   type Wall,
 } from "@arken/core";
 import { PlanGeometryEngine, RUN_STYLES, SYMBOLS, buildWallFrame, toLocal } from "@arken/geometry";
-import { buildLote01 } from "@arken/projects";
+import { SPEC_FIELDS, buildLote01, checkSpec, defaultSpec, generateHouse, type HouseSpec } from "@arken/projects";
 import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, titleLogo, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
 import { calcReportHtml, type ReportChapter } from "@arken/calc";
@@ -1124,10 +1123,67 @@ $<HTMLButtonElement>("#lote01").addEventListener("click", () => {
   if (store.canUndo && !confirmReplace()) return;
   loadModel(buildLote01(), "Proyecto Casa Lote 01 · Bosque de Agua cargado.");
 });
-$<HTMLButtonElement>("#new").addEventListener("click", () => {
-  if (store.canUndo && !confirmReplace()) return;
-  loadModel(createStarterModel().model, "Modelo nuevo de ejemplo.");
-});
+$<HTMLButtonElement>("#new").addEventListener("click", showSpecForm);
+
+/** Proyecto nuevo por especificaciones: el diseño aprobado se ajusta a lo que pide el usuario. */
+function showSpecForm(): void {
+  const tb = projectEntity()?.titleBlock ?? {};
+  const spec: Record<string, string | number> = { ...defaultSpec() };
+  for (const k of ["empresa", "diseno", "matricula"] as const) if (tb[k]) spec[k] = tb[k];
+  const box = document.createElement("div");
+  box.className = "modal";
+  const groups = ["Rótulo", "Arquitectura", "Redes"] as const;
+  const body = groups
+    .map(
+      (g) =>
+        `<fieldset><legend>${g}</legend>${SPEC_FIELDS.filter((f) => f.group === g)
+          .map((f) => {
+            const v = spec[f.key];
+            const num = typeof v === "number";
+            const attrs = num ? `type="number" step="${f.step ?? 1}" min="${f.min ?? ""}" max="${f.max ?? ""}"` : 'type="text"';
+            return `<label class="f"><span>${esc(f.label)}${f.unit ? ` (${esc(f.unit)})` : ""}</span><input data-spec="${f.key}" ${attrs} value="${esc(String(v))}" title="${esc(f.help ?? (num ? `Entre ${f.min} y ${f.max}` : ""))}"></label>`;
+          })
+          .join("")}</fieldset>`,
+    )
+    .join("");
+  box.innerHTML = `<div class="modal-card spec"><div class="modal-bar"><b>Nuevo proyecto por especificaciones</b><span></span><button class="primary" data-a="go">Generar planos</button><button data-a="x">Cerrar</button></div>
+<div class="spec-body"><p class="muted">ARKEN DISEÑO toma el diseño aprobado de la Casa Lote 01 (arquitectura, estructura, eléctrica, iluminación, domótica, hidráulica, sanitaria, gas y solar, con sus 11 planos) y lo ajusta a estas especificaciones. Los recintos y las redes se estiran con la casa, las luminarias y los calibres se redimensionan solos, y todos los cuadros y memorias se recalculan.</p>
+<div class="spec-grid">${body}</div><p class="spec-msg"></p></div></div>`;
+  const msg = box.querySelector<HTMLElement>(".spec-msg")!;
+  const read = (): HouseSpec => {
+    const out: Record<string, string | number> = { ...spec };
+    box.querySelectorAll<HTMLInputElement>("[data-spec]").forEach((i) => (out[i.dataset.spec!] = i.type === "number" ? Number(i.value) : i.value));
+    return out as unknown as HouseSpec;
+  };
+  box.addEventListener("input", () => {
+    const s = read();
+    const errs = checkSpec(s);
+    msg.textContent = errs.length ? errs.join(" ") : `Casa de ${(s.ancho * s.largo).toFixed(1)} m² construidos (${s.ancho.toFixed(2)} × ${s.largo.toFixed(2)} m).`;
+    msg.classList.toggle("bad", errs.length > 0);
+  });
+  box.addEventListener("click", (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (ev.target === box || a === "x") return box.remove();
+    if (a !== "go") return;
+    const s = read();
+    const errs = checkSpec(s);
+    if (errs.length) {
+      msg.textContent = errs.join(" ");
+      msg.classList.add("bad");
+      return;
+    }
+    if (store.canUndo && !confirmReplace()) return;
+    try {
+      loadModel(generateHouse(s), `Proyecto generado: ${s.proyecto} · ${(s.ancho * s.largo).toFixed(1)} m², 11 planos con todas las redes.`);
+      box.remove();
+    } catch (err) {
+      msg.textContent = err instanceof Error ? err.message : String(err);
+      msg.classList.add("bad");
+    }
+  });
+  document.body.appendChild(box);
+  box.dispatchEvent(new Event("input"));
+}
 function confirmReplace(): boolean {
   return window.confirm("Se reemplazará el modelo abierto. ¿Guardaste el JSON? Pulsa Aceptar para continuar.");
 }

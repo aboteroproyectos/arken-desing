@@ -116,3 +116,12 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; min-widt
 .kv-mini td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .kv-mini .warn { color: var(--danger); text-align: left; }
 @media (max-width: 900px) { .topo-body { grid-template-columns: 1fr; grid-template-rows: 55% 45%; } .topo-side { border-left: 0; border-top: 1px solid var(--line); } }
+.modal-card.spec { width: min(1100px, 100%); height: auto; max-height: 92vh; }
+.spec-body { overflow: auto; padding: 12px 18px 18px; }
+.spec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.spec-grid fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 10px; display: grid; gap: 6px; align-content: start; }
+.spec-grid legend { color: var(--navy); font-weight: 600; padding: 0 4px; }
+.spec-grid .f { grid-template-columns: 1fr 120px; }
+.spec-msg { margin: 12px 0 0; font-weight: 600; color: var(--navy); }
+.spec-msg.bad { color: var(--danger); }
+@media (max-width: 900px) { .spec-grid { grid-template-columns: 1fr; } }
