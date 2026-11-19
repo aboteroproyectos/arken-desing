@@ -49,24 +49,30 @@ interface RoofView {
   marks: number[];
 }
 
-function roofView(face: "S" | "N" | "E" | "W", width: number, W: number, L: number, H: number, type: string, slope: number, eave: number, t: number): RoofView {
+function roofView(face: "S" | "N" | "E" | "W", width: number, W: number, L: number, H: number, type: string, slope: number, eave: number, t: number, high: "S" | "N" | "E" | "W" = "W"): RoofView {
   const along = face === "S" || face === "N"; // la fachada mira el ancho W
   const s = slope / 100;
   if (type === "plana") {
     return { wallTop: () => H + 0.9, roof: [[[-0.05, H], [width + 0.05, H], [width + 0.05, H + 0.35], [-0.05, H + 0.35]]], marks: [H, H + 0.9] };
   }
   if (type === "una-agua") {
-    // Alto en el occidente, cae hacia el oriente.
-    const hx = (x: number) => H + s * (W - x);
-    if (along) {
-      const xOf = (u: number) => (face === "S" ? u : W - u);
-      const zE = (u: number) => hx(xOf(u));
+    // Borde alto en la fachada `high`; la cubierta cae hacia la opuesta.
+    const xAxis = high === "W" || high === "E";
+    const span = xAxis ? W : L;
+    if (along === xAxis) {
+      // La pendiente se ve inclinada: u recorre la dirección de la pendiente.
+      const distOf = (u: number) => {
+        const x = face === "S" ? u : face === "N" ? W - u : 0;
+        const y = face === "E" ? u : face === "W" ? L - u : 0;
+        return high === "W" ? x : high === "E" ? W - x : high === "S" ? y : L - y;
+      };
+      const zE = (u: number) => H + s * (span - distOf(u));
       const p: [number, number][] = [[-eave, zE(-eave)], [width + eave, zE(width + eave)], [width + eave, zE(width + eave) + t], [-eave, zE(-eave) + t]];
-      return { wallTop: zE, roof: [p], marks: [H, H + s * W] };
+      return { wallTop: zE, roof: [p], marks: [H, H + s * span] };
     }
-    const top = face === "W" ? H + s * W : H;
-    const eaveZ = face === "W" ? top + s * eave : top - s * eave;
-    const far = face === "W" ? top : H + s * W;
+    const top = face === high ? H + s * span : H;
+    const eaveZ = face === high ? top + s * eave : top - s * eave;
+    const far = face === high ? top : H + s * span;
     return { wallTop: () => top, roof: [[[-eave, eaveZ], [width + eave, eaveZ], [width + eave, Math.max(eaveZ, far) + t], [-eave, Math.max(eaveZ, far) + t]]], marks: [top] };
   }
   const ridgeAlongY = L >= W;
@@ -171,14 +177,41 @@ function roofTexture(p: Pen, mat: string, poly: [number, number][], X: (u: numbe
 
 // ─── Fachadas ────────────────────────────────────────────────
 
+/** Volumen de la casa para fachadas: un pabellón o una galería (coordenadas globales de las caras). */
+interface Vol {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  floors: number;
+  type: string;
+  high: "S" | "N" | "E" | "W";
+  galeria: boolean;
+}
+
+function volumes(pr: Props): Vol[] {
+  const type = str(pr, "cubierta_tipo", "dos-aguas");
+  try {
+    const raw = JSON.parse(str(pr, "volumenes", "")) as Partial<Vol>[];
+    if (Array.isArray(raw) && raw.length)
+      return raw.map((r) => ({ x0: r.x0 ?? 0, y0: r.y0 ?? 0, x1: r.x1 ?? 1, y1: r.y1 ?? 1, floors: r.floors ?? 1, type: r.galeria ? "plana" : r.type ?? type, high: r.high ?? "W", galeria: !!r.galeria }));
+  } catch {
+    /* modelo sin volúmenes: una sola barra */
+  }
+  return [{ x0: num(pr, "casa_xmin", 0), y0: num(pr, "casa_ymin", 0), x1: num(pr, "casa_xmax", 12), y1: num(pr, "casa_ymax", 15), floors: num(pr, "pisos", 1), type, high: "W", galeria: false }];
+}
+
 export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock): void {
   const pr = projectProps(reader);
-  const W = num(pr, "casa_xmax", 12) - num(pr, "casa_xmin", 0);
-  const L = num(pr, "casa_ymax", 15) - num(pr, "casa_ymin", 0);
-  const floors = num(pr, "pisos", 1);
+  const vols = volumes(pr);
+  const X0 = Math.min(...vols.map((v) => v.x0));
+  const X1 = Math.max(...vols.map((v) => v.x1));
+  const Y0 = Math.min(...vols.map((v) => v.y0));
+  const Y1 = Math.max(...vols.map((v) => v.y1));
+  const W = X1 - X0;
+  const L = Y1 - Y0;
+  const floorsMax = Math.max(...vols.map((v) => v.floors));
   const fh = num(pr, "altura_piso_m", 3);
-  const H = floors * fh;
-  const type = str(pr, "cubierta_tipo", "dos-aguas");
   const slope = num(pr, "cubierta_pendiente_pct", 30);
   const eave = num(pr, "cubierta_alero_m", 0.9);
   const t = num(pr, "cubierta_espesor_m", 0.25);
@@ -187,9 +220,9 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
   const cp = { x0: num(pr, "parqueadero_xmin", NaN), x1: num(pr, "parqueadero_xmax", NaN), y0: num(pr, "parqueadero_ymin", NaN), y1: num(pr, "parqueadero_ymax", NaN), h: num(pr, "parqueadero_altura_m", 2.8) };
   const hasCp = Number.isFinite(cp.x0);
   // Escala: la mayor escala normalizada con la que las cuatro fachadas caben en su casilla.
-  const spanX = W + 2 * eave + 1 + (hasCp ? Math.max(0, -cp.x0) + Math.max(0, cp.x1 - W) : 0);
+  const spanX = W + 2 * eave + 1 + (hasCp ? Math.max(0, X0 - cp.x0) + Math.max(0, cp.x1 - X1) : 0);
   const spanY = L + 2 * eave + 1;
-  const tall = floors * fh + Math.max(W, L) * (num(pr, "cubierta_pendiente_pct", 30) / 100) * 0.5 + 1.2;
+  const tall = Math.max(...vols.map((v) => v.floors * fh + Math.max(v.x1 - v.x0, v.y1 - v.y0) * (slope / 100) * 0.5)) + 1.2;
   const fitMm = Math.min((cellW - 40) / Math.max(spanX, spanY), (cellH - 26) / tall);
   const scale = [50, 75, 100, 125, 150, 200, 250].find((sc) => 1000 / sc <= fitMm) ?? 250;
   const mm = 1000 / scale;
@@ -217,8 +250,18 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
   faces.forEach((fc, i) => {
     const along = fc.key === "S" || fc.key === "N";
     const width = along ? W : L;
-    const toU = (x: number, y: number) => (fc.key === "S" ? x : fc.key === "N" ? W - x : fc.key === "E" ? y : L - y);
-    const rv = roofView(fc.key, width, W, L, H, type, slope, eave, t);
+    // u: coordenada horizontal de la fachada (de izquierda a derecha según se mira).
+    const toU = (x: number, y: number) => (fc.key === "S" ? x - X0 : fc.key === "N" ? X1 - x : fc.key === "E" ? y - Y0 : Y1 - y);
+    // Profundidad: mayor = más lejos del observador.
+    const depthOf = (v: Vol) => (fc.key === "S" ? v.y0 : fc.key === "N" ? -v.y1 : fc.key === "E" ? -v.x1 : v.x0);
+    const views = vols.map((v) => {
+      const vu0 = Math.min(toU(v.x0, v.y0), toU(v.x1, v.y1));
+      const vw = along ? v.x1 - v.x0 : v.y1 - v.y0;
+      const Hv = v.floors * fh;
+      const rv = roofView(fc.key, vw, v.x1 - v.x0, v.y1 - v.y0, Hv, v.type, v.galeria ? 1 : slope, v.galeria ? 0 : v.type === "plana" ? 0 : eave, v.galeria ? 0.3 : t, v.high);
+      if (v.galeria) rv.wallTop = () => Hv + 0.35;
+      return { v, vu0, vw, Hv, rv };
+    });
     let uL = -eave - 0.5,
       uR = width + eave + 0.5;
     if (hasCp && along) {
@@ -227,88 +270,103 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
       uL = Math.min(uL, a, c);
       uR = Math.max(uR, a, c);
     }
-    const top = Math.max(...rv.roof.flat().map(([, z]) => z), rv.wallTop(width / 2));
+    const top = Math.max(...views.flatMap((w) => [...w.rv.roof.flat().map(([, z]) => z), w.rv.wallTop(w.vw / 2)]));
     const drawW = (uR - uL) * mm;
     const col = i % 2,
       row = Math.floor(i / 2);
     const cx0 = b.x + col * cellW + 22 + (cellW - 30 - drawW) / 2 - uL * mm;
     const cy0 = b.y + (1 - row) * cellH + (cellH - top * mm) / 2 + 5;
-    const X = (u: number) => cx0 + u * mm;
     const Y = (z: number) => cy0 + z * mm;
-
-    // Muro (con frontón si la cubierta lo genera)
-    const N = 40;
-    const wallPoly: [number, number][] = [[0, 0]];
-    for (let k = 0; k <= N; k++) wallPoly.push([(width * k) / N, rv.wallTop((width * k) / N)]);
-    wallPoly.push([width, 0]);
-    fill(wallPoly.map(([u, z]) => [X(u), Y(z)]), wallColor);
-    if (wallKind !== "estuco") hatch(p, wallKind, wallPoly, X, Y, "#5c4a3c", mm);
-    // Zócalo
     const zb = 0.6;
-    fill([[X(0), Y(0)], [X(width), Y(0)], [X(width), Y(zb)], [X(0), Y(zb)]], base === "piedra" ? "#9a958a" : base === "ladrillo" ? "#9c4e33" : base === "concreto" ? "#b4b2ac" : "#d9d3c6");
-    if (base !== "estuco") hatch(p, base, [[0, 0], [width, 0], [width, zb], [0, zb]], X, Y, "#4b463f", mm);
-    // Entrepisos
-    for (let f = 1; f < floors; f++) {
-      const z = f * fh;
-      if (accent === "concreto") fill([[X(0), Y(z - 0.3)], [X(width), Y(z - 0.3)], [X(width), Y(z)], [X(0), Y(z)]], "#b9b7b1");
-      else p.line([[X(0), Y(z - 0.12)], [X(width), Y(z - 0.12)]], { weight: 0.12, color: "#6b6f74" });
-    }
-    p.line(wallPoly.map(([u, z]) => [X(u), Y(z)]), { weight: 0.5 });
 
-    // Vanos de todos los pisos
-    const holes: Hole[] = [];
-    for (const w of walls.filter((x) => x.properties?.["fachada"] === fc.key)) {
-      const z0 = levelOf(reader, w.id)?.elevation ?? 0;
-      const Lw = Math.hypot(w.end.x - w.start.x, w.end.y - w.start.y);
-      const ux = (w.end.x - w.start.x) / Lw,
-        uy = (w.end.y - w.start.y) / Lw;
-      for (const oid of reader.indices.openingsOfHost(w.id) ?? []) {
-        const o = getOfKind(reader, oid, "Opening") as Opening | undefined;
-        if (!o) continue;
-        const a = { x: w.start.x + ux * o.offsetAlongAxis, y: w.start.y + uy * o.offsetAlongAxis };
-        const c = { x: a.x + ux * o.width, y: a.y + uy * o.width };
-        const fl = reader.getEntity(reader.indices.fillingOfOpening(oid) ?? "");
-        const u0 = Math.min(toU(a.x, a.y), toU(c.x, c.y));
-        holes.push({ u0, u1: u0 + o.width, z0: z0 + o.sillHeight, h: o.height, door: fl?.kind === "Door", main: fl?.kind === "Door" && fl.properties?.["principal"] === true });
+    for (const { v, vu0, vw, Hv, rv } of [...views].sort((a, c) => depthOf(c.v) - depthOf(a.v))) {
+      const X = (u: number) => cx0 + (vu0 + u) * mm;
+      const floors = v.floors;
+      // Muro (con frontón si la cubierta lo genera)
+      const N = 40;
+      const wallPoly: [number, number][] = [[0, 0]];
+      for (let k = 0; k <= N; k++) wallPoly.push([(vw * k) / N, rv.wallTop((vw * k) / N)]);
+      wallPoly.push([vw, 0]);
+      fill(wallPoly.map(([u, z]) => [X(u), Y(z)]), v.galeria ? "#e9ecee" : wallColor);
+      if (wallKind !== "estuco" && !v.galeria) hatch(p, wallKind, wallPoly, X, Y, "#5c4a3c", mm);
+      // Zócalo
+      fill([[X(0), Y(0)], [X(vw), Y(0)], [X(vw), Y(zb)], [X(0), Y(zb)]], base === "piedra" ? "#9a958a" : base === "ladrillo" ? "#9c4e33" : base === "concreto" ? "#b4b2ac" : "#d9d3c6");
+      if (base !== "estuco") hatch(p, base, [[0, 0], [vw, 0], [vw, zb], [0, zb]], X, Y, "#4b463f", mm);
+      // Entrepisos
+      for (let f = 1; f < floors; f++) {
+        const z = f * fh;
+        if (accent === "concreto") fill([[X(0), Y(z - 0.3)], [X(vw), Y(z - 0.3)], [X(vw), Y(z)], [X(0), Y(z)]], "#b9b7b1");
+        else p.line([[X(0), Y(z - 0.12)], [X(vw), Y(z - 0.12)]], { weight: 0.12, color: "#6b6f74" });
       }
-    }
-    // Acento: revestimiento alrededor del acceso o de los vanos grandes del primer piso.
-    const main = holes.find((h) => h.main);
-    if (main && accent !== "concreto" && accent !== "estuco") {
-      const a0 = Math.max(0, main.u0 - 1.2),
-        a1 = Math.min(width, main.u1 + 1.2);
-      const poly: [number, number][] = [[a0, zb], [a1, zb], [a1, fh], [a0, fh]];
-      fill(poly.map(([u, z]) => [X(u), Y(z)]), accentColor);
-      hatch(p, accent === "celosia" ? "madera" : accent, poly, X, Y, "#3d2a1c", mm);
-    }
-    if (accent === "concreto" && floors > 1) {
-      // Volumen superior enmarcado en concreto
-      fill([[X(-0.15), Y(H - 0.35)], [X(width + 0.15), Y(H - 0.35)], [X(width + 0.15), Y(H)], [X(-0.15), Y(H)]], "#a9a8a3");
-    }
-    for (const h of holes) {
-      const x = X(h.u0),
-        y = Y(h.z0),
-        ww = (h.u1 - h.u0) * mm,
-        hh = h.h * mm;
-      if (h.door) {
-        p.rect(x, y, ww, hh, { fill: "solid", color: h.main ? accentColor : "#8d949b", weight: 0 });
-        if (h.main) for (let k = 1; k < 6; k++) p.line([[x + (ww * k) / 6, y], [x + (ww * k) / 6, y + hh]], { weight: 0.08, color: "#3d2a1c" });
-        p.rect(x, y, ww, hh, { weight: 0.35, color: frame });
-      } else {
-        p.rect(x, y, ww, hh, { fill: "solid", color: GLASS, weight: 0 });
-        const parts = Math.max(1, Math.round((h.u1 - h.u0) / 1.2));
-        for (let k = 1; k < parts; k++) p.line([[x + (ww * k) / parts, y], [x + (ww * k) / parts, y + hh]], { weight: 0.3, color: frame });
-        for (let k = 0; k < parts; k++) p.line([[x + (ww * k) / parts + (ww / parts) * 0.15, y + hh * 0.2], [x + (ww * k) / parts + (ww / parts) * 0.45, y + hh * 0.55]], { weight: 0.1, color: "#ffffff" });
-        p.rect(x, y, ww, hh, { weight: 0.4, color: frame });
-        // Celosías corredizas frente a las habitaciones (vanos altos de pisos superiores)
-        if (celosias && h.z0 >= fh - 0.01 && h.h >= 1.4) {
-          const cw = (h.u1 - h.u0) * 0.5;
-          const c0 = h.u1 - cw;
-          p.rect(X(c0), y, cw * mm, hh, { fill: "solid", color: accentColor, weight: 0.2 });
-          for (let u = c0 + 0.07; u < h.u1; u += 0.07) p.line([[X(u), y], [X(u), y + hh]], { weight: 0.05, color: "#3d2a1c" });
+      p.line(wallPoly.map(([u, z]) => [X(u), Y(z)]), { weight: 0.5 });
+
+      // Vanos de todos los pisos en los muros de esta fachada que pertenecen al volumen
+      const holes: Hole[] = [];
+      const inVol = (w: Wall) => {
+        const mx = (w.start.x + w.end.x) / 2,
+          my = (w.start.y + w.end.y) / 2;
+        return mx >= v.x0 - 0.05 && mx <= v.x1 + 0.05 && my >= v.y0 - 0.05 && my <= v.y1 + 0.05;
+      };
+      for (const w of walls.filter((x) => x.properties?.["fachada"] === fc.key && inVol(x))) {
+        const z0 = levelOf(reader, w.id)?.elevation ?? 0;
+        const Lw = Math.hypot(w.end.x - w.start.x, w.end.y - w.start.y);
+        const ux = (w.end.x - w.start.x) / Lw,
+          uy = (w.end.y - w.start.y) / Lw;
+        for (const oid of reader.indices.openingsOfHost(w.id) ?? []) {
+          const o = getOfKind(reader, oid, "Opening") as Opening | undefined;
+          if (!o) continue;
+          const a = { x: w.start.x + ux * o.offsetAlongAxis, y: w.start.y + uy * o.offsetAlongAxis };
+          const c = { x: a.x + ux * o.width, y: a.y + uy * o.width };
+          const fl = reader.getEntity(reader.indices.fillingOfOpening(oid) ?? "");
+          const u0 = Math.min(toU(a.x, a.y), toU(c.x, c.y)) - vu0;
+          holes.push({ u0, u1: u0 + o.width, z0: z0 + o.sillHeight, h: o.height, door: fl?.kind === "Door", main: fl?.kind === "Door" && fl.properties?.["principal"] === true });
         }
       }
+      // Acento: revestimiento alrededor del acceso.
+      const main = holes.find((h) => h.main);
+      if (main && accent !== "concreto" && accent !== "estuco") {
+        const a0 = Math.max(0, main.u0 - 1.2),
+          a1 = Math.min(vw, main.u1 + 1.2);
+        const poly: [number, number][] = [[a0, zb], [a1, zb], [a1, fh], [a0, fh]];
+        fill(poly.map(([u, z]) => [X(u), Y(z)]), accentColor);
+        hatch(p, accent === "celosia" ? "madera" : accent, poly, X, Y, "#3d2a1c", mm);
+      }
+      if (accent === "concreto" && floors > 1) {
+        // Volumen superior enmarcado en concreto
+        fill([[X(-0.15), Y(Hv - 0.35)], [X(vw + 0.15), Y(Hv - 0.35)], [X(vw + 0.15), Y(Hv)], [X(-0.15), Y(Hv)]], "#a9a8a3");
+      }
+      for (const h of holes) {
+        const x = X(h.u0),
+          y = Y(h.z0),
+          ww = (h.u1 - h.u0) * mm,
+          hh = h.h * mm;
+        if (h.door) {
+          p.rect(x, y, ww, hh, { fill: "solid", color: h.main ? accentColor : "#8d949b", weight: 0 });
+          if (h.main) for (let k = 1; k < 6; k++) p.line([[x + (ww * k) / 6, y], [x + (ww * k) / 6, y + hh]], { weight: 0.08, color: "#3d2a1c" });
+          p.rect(x, y, ww, hh, { weight: 0.35, color: frame });
+        } else {
+          p.rect(x, y, ww, hh, { fill: "solid", color: GLASS, weight: 0 });
+          const parts = Math.max(1, Math.round((h.u1 - h.u0) / 1.2));
+          for (let k = 1; k < parts; k++) p.line([[x + (ww * k) / parts, y], [x + (ww * k) / parts, y + hh]], { weight: 0.3, color: frame });
+          for (let k = 0; k < parts; k++) p.line([[x + (ww * k) / parts + (ww / parts) * 0.15, y + hh * 0.2], [x + (ww * k) / parts + (ww / parts) * 0.45, y + hh * 0.55]], { weight: 0.1, color: "#ffffff" });
+          p.rect(x, y, ww, hh, { weight: 0.4, color: frame });
+          // Celosías corredizas frente a las habitaciones (vanos altos de pisos superiores)
+          if (celosias && h.z0 >= fh - 0.01 && h.h >= 1.4) {
+            const cw = (h.u1 - h.u0) * 0.5;
+            const c0 = h.u1 - cw;
+            p.rect(X(c0), y, cw * mm, hh, { fill: "solid", color: accentColor, weight: 0.2 });
+            for (let u = c0 + 0.07; u < h.u1; u += 0.07) p.line([[X(u), y], [X(u), y + hh]], { weight: 0.05, color: "#3d2a1c" });
+          }
+        }
+      }
+      // Cubierta
+      for (const poly of rv.roof) {
+        fill(poly.map(([u, z]) => [X(u), Y(z)]), roofColor);
+        if (!v.galeria) roofTexture(p, roofMat, poly, X, Y);
+        p.line([...poly, poly[0]!].map(([u, z]) => [X(u), Y(z)]), { weight: 0.4, color: INK });
+      }
     }
+    const X = (u: number) => cx0 + u * mm;
     // Parqueadero cubierto
     if (hasCp) {
       if (along) {
@@ -318,24 +376,18 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
         const far = fc.key === "S" ? a + 0.15 : c - 0.15;
         p.rect(X(far) - 0.08 * mm, Y(0), 0.16 * mm, cp.h * mm, { weight: 0.25, fill: "solid", color: "#5c6670" });
       } else if (fc.key === "W") {
-        const a = L - cp.y1,
-          c = L - cp.y0;
+        const a = toU(cp.x0, cp.y1),
+          c = toU(cp.x0, cp.y0);
         fill([[X(a), Y(cp.h)], [X(c), Y(cp.h)], [X(c), Y(cp.h + 0.18)], [X(a), Y(cp.h + 0.18)]], roofColor);
         for (const u of [a + 0.15, c - 0.15]) p.rect(X(u) - 0.08 * mm, Y(0), 0.16 * mm, cp.h * mm, { weight: 0.25, fill: "solid", color: "#5c6670" });
       }
-    }
-    // Cubierta
-    for (const poly of rv.roof) {
-      fill(poly.map(([u, z]) => [X(u), Y(z)]), roofColor);
-      roofTexture(p, roofMat, poly, X, Y);
-      p.line([...poly, poly[0]!].map(([u, z]) => [X(u), Y(z)]), { weight: 0.4, color: INK });
     }
     // Terreno
     p.line([[X(uL - 0.5), Y(0)], [X(uR + 0.5), Y(0)]], { weight: 0.7 });
     for (let u = uL - 0.5; u < uR + 0.5; u += 0.6) p.line([[X(u), Y(0)], [X(u - 0.3), Y(-0.3)]], { weight: 0.1 });
     // Niveles
     const lx = X(uL) - 4;
-    const marks = [...new Set([0, ...Array.from({ length: floors - 1 }, (_, f) => (f + 1) * fh), ...rv.marks].map((z) => Math.round(z * 100) / 100))].sort((a, c) => a - c);
+    const marks = [...new Set([0, ...Array.from({ length: floorsMax - 1 }, (_, f) => (f + 1) * fh), ...views.flatMap((w) => (w.v.galeria ? [] : w.rv.marks))].map((z) => Math.round(z * 100) / 100))].sort((a, c) => a - c);
     for (const z of marks) {
       const ly = Y(z);
       p.out.push({ kind: "polygon", points: [p.w(lx, ly), p.w(lx - 1.2, ly + 1.8), p.w(lx + 1.2, ly + 1.8)], style: "hoja", fill: "solid", color: INK, weight: 0 });
@@ -354,9 +406,14 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
 
 export function drawSections(p: Pen, reader: ModelReader, b: SheetBlock): void {
   const pr = projectProps(reader);
-  const W = num(pr, "casa_xmax", 12);
-  const L = num(pr, "casa_ymax", 15);
-  const floors = num(pr, "pisos", 1);
+  // Marco del corte: el pabellón cortado (sus coordenadas locales); por defecto, la casa entera.
+  const turn = num(pr, "corte_giro", 0);
+  const ox = num(pr, "corte_ox", 0);
+  const oy = num(pr, "corte_oy", 0);
+  const loc = (q: { x: number; y: number }) => (turn === 1 ? { x: q.y - oy, y: ox - q.x } : turn === 3 ? { x: oy - q.y, y: q.x - ox } : { x: q.x - ox, y: q.y - oy });
+  const W = num(pr, "corte_W", num(pr, "casa_xmax", 12));
+  const L = num(pr, "corte_L", num(pr, "casa_ymax", 15));
+  const floors = num(pr, "corte_pisos", num(pr, "pisos", 1));
   const fh = num(pr, "altura_piso_m", 3);
   const H = floors * fh;
   const type = str(pr, "cubierta_tipo", "dos-aguas");
@@ -376,8 +433,16 @@ export function drawSections(p: Pen, reader: ModelReader, b: SheetBlock): void {
     { name: "CORTE LONGITUDINAL A-A", width: L, face: "E", at: cutX },
     { name: "CORTE TRANSVERSAL B-B", width: W, face: "S", at: cutY },
   ];
-  const walls = [...reader.entities()].filter((e): e is Wall => e.kind === "Wall");
-  const spaces = [...reader.entities()].filter((e): e is Space => e.kind === "Space" && e.properties?.["exterior"] !== true);
+  const framed = typeof pr["corte_W"] === "number";
+  const inside = (q: { x: number; y: number }) => !framed || (q.x >= -0.25 && q.x <= W + 0.25 && q.y >= -0.25 && q.y <= L + 0.25);
+  const walls = [...reader.entities()]
+    .filter((e): e is Wall => e.kind === "Wall")
+    .map((w) => ({ ...w, start: loc(w.start), end: loc(w.end) }))
+    .filter((w) => inside(w.start) && inside(w.end));
+  const spaces = [...reader.entities()]
+    .filter((e): e is Space => e.kind === "Space" && e.properties?.["exterior"] !== true)
+    .map((s) => ({ ...s, boundary: s.boundary.map(loc) }))
+    .filter((s) => s.boundary.every(inside));
   const fill = (pts: [number, number][], color: string) => p.out.push({ kind: "polygon", points: pts.map(([x, y]) => p.w(x, y)), style: "hoja", fill: "solid", color, weight: 0 });
   const cellH = (b.h - 10) / 2;
   sections.forEach((sec, i) => {

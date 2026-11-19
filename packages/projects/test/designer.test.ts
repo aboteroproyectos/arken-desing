@@ -99,4 +99,23 @@ describe("descripción y preguntas", () => {
     expect(nextQuestion(d)).toBeUndefined();
     check(d);
   });
+
+  it.each(["L", "T", "U", "X", "cuadrada"] as const)("huella en %s: pabellones unidos por galerías, planos completos", (huella) => {
+    for (const pisos of [1, 2]) {
+      const { r, review } = check({ huella, pisos, habitaciones: 4 });
+      expect(r.program.huella).toBe(huella);
+      expect(r.layout.wings.length).toBe(huella === "L" || huella === "T" ? 2 : 3);
+      expect(r.layout.links.length).toBe(r.layout.wings.length - 1);
+      expect(review.score).toBeGreaterThanOrEqual(70);
+    }
+  });
+
+  it("entiende la huella en la descripción", () => {
+    expect(parseDescription("casa en L de un piso").draft.huella).toBe("L");
+    expect(parseDescription("casa en forma de T").draft.huella).toBe("T");
+    expect(parseDescription("casa en U con patio").draft.huella).toBe("U");
+    expect(parseDescription("casa en cruz").draft.huella).toBe("X");
+    expect(parseDescription("casa patio con claustro").draft.huella).toBe("cuadrada");
+    expect(QUESTIONS.some((q) => q.key === "huella")).toBe(true);
+  });
 });

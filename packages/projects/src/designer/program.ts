@@ -18,6 +18,17 @@ export const GAS_NAMES: Record<GasSupply, string> = {
   pipetas: "GLP con cuarto de pipetas",
 };
 
+/** Huella de la casa en planta: barra rectangular, casa patio cuadrada, o pabellones en L, T, U o cruz. */
+export type Footprint = "rectangular" | "cuadrada" | "L" | "T" | "U" | "X";
+export const FOOTPRINT_NAMES: Record<Footprint, string> = {
+  rectangular: "rectangular (una sola barra)",
+  cuadrada: "cuadrada con patio central",
+  L: "en L",
+  T: "en T",
+  U: "en U",
+  X: "en cruz (X)",
+};
+
 export interface HouseProgram {
   readonly proyecto: string;
   readonly propietario: string;
@@ -50,6 +61,8 @@ export interface HouseProgram {
   readonly servicio: boolean;
   /** Red de gas y su suministro. */
   readonly gas: GasSupply;
+  /** Forma de la planta. */
+  readonly huella: Footprint;
 }
 
 export type ProgramDraft = Partial<HouseProgram>;
@@ -82,6 +95,7 @@ export function defaultProgram(): HouseProgram {
     habitacionPrimerPiso: false,
     servicio: false,
     gas: "no",
+    huella: "rectangular",
   };
 }
 
@@ -182,6 +196,15 @@ export function parseDescription(text: string): ParseResult {
   else if (/\b(tanque (?:estacionario|de gas|de glp)|glp|propano)\b/.test(t)) (d.gas = "tanque"), said.push("gas GLP con tanque estacionario");
   else if (/\bgas\b/.test(t)) (d.gas = "natural"), said.push("gas natural");
 
+  // Huella (forma de la planta)
+  if (/\b(en|forma de|planta en|tipo) (l|ele)\b/.test(t)) d.huella = "L";
+  else if (/\b(en|forma de|planta en|tipo) (t|te)\b/.test(t)) d.huella = "T";
+  else if (/\b(en|forma de|planta en|tipo) (u|herradura)\b|\bherradura\b/.test(t)) d.huella = "U";
+  else if (/\b(en|forma de|planta en|tipo) (x|cruz)\b|\bcruciforme\b/.test(t)) d.huella = "X";
+  else if (/\b(cuadrada|claustro|patio central|casa patio|planta cuadrada)\b/.test(t)) d.huella = "cuadrada";
+  else if (/\b(rectangular|alargada|en barra|lineal)\b/.test(t)) d.huella = "rectangular";
+  if (d.huella) said.push(`planta ${FOOTPRINT_NAMES[d.huella]}`);
+
   // Parqueaderos
   if (neg("garajes?|parqueaderos?|carros?|vehiculos?|carport")) (d.parqueaderos = 0), said.push("sin parqueadero");
   else {
@@ -267,6 +290,19 @@ export const QUESTIONS: readonly Question[] = [
     text: "¿Qué estilo de arquitectura quiere para la casa y sus fachadas?",
     help: "El estilo define el techo, los aleros, los materiales y colores de las fachadas, las ventanas y los acabados.",
     options: (Object.values(STYLES)).map((s) => ({ label: s.name, patch: { estilo: s.key } })),
+  },
+  {
+    key: "huella",
+    text: "¿Qué forma quiere para la planta de la casa?",
+    help: "En L, T, U y cruz la casa se arma por pabellones (zona social, zona privada) unidos por galerías acristaladas; la cuadrada rodea un patio central. La rectangular es una sola barra.",
+    options: [
+      { label: "Rectangular", patch: { huella: "rectangular" } },
+      { label: "En L", patch: { huella: "L" } },
+      { label: "En T", patch: { huella: "T" } },
+      { label: "En U", patch: { huella: "U" } },
+      { label: "En cruz (X)", patch: { huella: "X" } },
+      { label: "Cuadrada con patio", patch: { huella: "cuadrada" } },
+    ],
   },
   { key: "pisos", text: "¿Cuántos pisos tendrá la casa?", options: nums("pisos", [1, 2, 3, 4], (n) => `${n} ${n === 1 ? "piso" : "pisos"}`), input: "number" },
   { key: "habitaciones", text: "¿Cuántas habitaciones, contando la principal?", options: nums("habitaciones", [2, 3, 4, 5, 6], (n) => `${n}`), input: "number" },
@@ -374,6 +410,7 @@ export function answerText(q: Question, text: string): ProgramDraft | undefined 
 export function describeProgram(p: HouseProgram): string[] {
   const out = [
     `Estilo ${STYLES[p.estilo].name.toLowerCase()}`,
+    `Planta ${FOOTPRINT_NAMES[p.huella]}`,
     `${p.pisos} ${p.pisos === 1 ? "piso" : "pisos"}, ${p.habitaciones} habitaciones${p.banos ? `, ${p.banos} baños` : ""}`,
     `Cubierta ${ROOF_NAMES[p.cubierta]}${p.cubierta === "plana" ? "" : `, pendiente ${p.pendiente} %`}`,
     `Cocina ${p.cocina}${p.isla ? " con isla" : ""}${p.estudio ? " · estudio" : ""}${p.estar ? " · estar de TV" : ""}${p.terraza ? " · terraza con BBQ" : ""}`,

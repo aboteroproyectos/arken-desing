@@ -6,7 +6,8 @@ import { BimStore, type BimModel, type Id, type Vec2 } from "@arken/core";
 import { circuitResults, serviceDemand } from "@arken/calc";
 import { ProjectBuilder, chain, newId, orthoPath, rect, v, type Props } from "../builder";
 import { completeProgram, GAS_NAMES, ROOF_NAMES, type HouseProgram, type ProgramDraft } from "./program";
-import { layoutHouse, stairGeometry, TREAD, type Layout, type Mod } from "./layout";
+import { builtArea, faceToGlobal, layoutHouse, stairGeometry, toGlobal, TREAD, type Face, type Layout, type Mod, type Wing } from "./layout";
+import { XfBuilder } from "./xf";
 import { finishProps, LUX, type RoomType } from "./finishes";
 import { STYLES, type StyleDef } from "./styles";
 import { buildComms, buildGas, buildRain, buildSanitary, buildWater, type NetCtx } from "./networks";
@@ -29,6 +30,8 @@ export interface Room {
   readonly x1: number;
   readonly y1: number;
   readonly doors: Vec2[];
+  /** Pabellón al que pertenece (A, B o C). */
+  readonly wing: "A" | "B" | "C";
   /** Fachadas que toca (S, N, E, W). */
   readonly facades: string[];
   windowArea: number;
@@ -57,7 +60,13 @@ interface WallRec {
 }
 
 class Designer {
-  readonly b = new ProjectBuilder();
+  /** Constructor del modelo (pabellón A, coordenadas globales). */
+  readonly base = new ProjectBuilder();
+  /** Constructor del pabellón en curso (B y C se dibujan en sus coordenadas locales). */
+  b: ProjectBuilder = this.base;
+  /** Pabellón en curso. */
+  private wing: Wing;
+  private xfs = new Map<string, ProjectBuilder>();
   readonly rooms: Room[] = [];
   private walls: WallRec[] = [];
   private levels: Id[] = [];
@@ -75,13 +84,43 @@ class Designer {
     readonly p: HouseProgram,
     readonly st: StyleDef,
     readonly lay: Layout,
-  ) {}
+  ) {
+    this.wing = lay.wings[0]!;
+  }
 
+  /** Ancho y largo del pabellón en curso (coordenadas locales). */
   get W() {
-    return this.lay.W;
+    return this.wing.W;
   }
   get L() {
-    return this.lay.L;
+    return this.wing.L;
+  }
+  private useWing(w: Wing): void {
+    this.wing = w;
+    if (w.key === "A") this.b = this.base;
+    else {
+      if (!this.xfs.has(w.key)) this.xfs.set(w.key, new XfBuilder(this.base, w.place));
+      this.b = this.xfs.get(w.key)!;
+    }
+  }
+  /** Punto local del pabellón en curso → global. */
+  private G(p: Vec2): Vec2 {
+    const q = toGlobal(this.wing.place, p.x, p.y);
+    return v(q.x, q.y);
+  }
+  private get multi(): boolean {
+    return this.lay.wings.length > 1;
+  }
+  /** Rectángulo global (caras exteriores) de un pabellón. */
+  wingRect(w: Wing): { x0: number; y0: number; x1: number; y1: number } {
+    const a = toGlobal(w.place, 0, 0);
+    const c = toGlobal(w.place, w.W, w.L);
+    return { x0: Math.min(a.x, c.x), y0: Math.min(a.y, c.y), x1: Math.max(a.x, c.x), y1: Math.max(a.y, c.y) };
+  }
+  /** Extensión global de la casa (pabellones y galerías). */
+  bbox(): { x0: number; y0: number; x1: number; y1: number } {
+    const rs = this.lay.wings.map((w) => this.wingRect(w));
+    return { x0: Math.min(...rs.map((r) => r.x0)), y0: Math.min(...rs.map((r) => r.y0)), x1: Math.max(...rs.map((r) => r.x1)), y1: Math.max(...rs.map((r) => r.y1)) };
   }
   get F() {
     return this.p.pisos;
@@ -92,7 +131,14 @@ class Designer {
 
   build(): BimModel {
     this.setupProject();
-    for (let f = 1; f <= this.F; f++) this.buildFloor(f);
+    for (let f = 1; f <= this.F; f++)
+      for (const w of this.lay.wings)
+        if (f <= w.floors.length) {
+          this.useWing(w);
+          this.buildFloor(f);
+        }
+    this.useWing(this.lay.wings[0]!);
+    this.buildLinks();
     this.buildSite();
     this.buildStructure();
     this.buildRoof();
@@ -100,7 +146,7 @@ class Designer {
     this.buildNetworks();
     this.buildSheets();
     this.finishProject();
-    return this.b.snapshot();
+    return this.base.snapshot();
   }
 
   // ─── Proyecto, niveles, materiales ──────────────────────────
@@ -108,7 +154,7 @@ class Designer {
     const { p, st, lay } = this;
     const b = this.b;
     const buildingId = newId();
-    const area = lay.W * lay.L * p.pisos;
+    const area = builtArea(lay);
     const today = new Date();
     const mes = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"][today.getMonth()];
     const code = p.proyecto.split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 4).toUpperCase() || "CASA";
@@ -160,6 +206,8 @@ class Designer {
         casa_ymin: 0,
         casa_ymax: lay.L,
         fachadas_escala: this.elevationScale(),
+        huella: p.huella,
+        ...(this.multi ? { volumenes: JSON.stringify(this.volumes()), ...this.sectionFrame() } : {}),
         factor_mantenimiento: 0.8,
         ev_limite_A: p.cargadorEV && p.parqueaderos > 0 ? (p.parqueaderos >= 2 ? 40 : 32) : 0,
         ...(cp ? { parqueadero_xmin: -cp, parqueadero_xmax: -0.05, parqueadero_ymin: -0.15, parqueadero_ymax: 6.35, parqueadero_altura_m: 2.8 } : {}),
@@ -176,7 +224,8 @@ class Designer {
     for (let i = 0; i < p.pisos; i++) {
       const id = newId();
       this.levels.push(id);
-      b.put({ id, kind: "Level", name: `Piso ${i + 1}`, elevation: i * lay.dims.floorH, height: lay.dims.floorH, properties: { area_construida_m2: round(lay.W * lay.L) } });
+      const la = lay.wings.reduce((t, w) => t + (i < w.floors.length ? w.W * w.L : 0), 0) + (i === 0 ? lay.links.reduce((t, k) => t + Math.abs(k.xW - k.xA) * (k.c1 - k.c0), 0) : 0);
+      b.put({ id, kind: "Level", name: `Piso ${i + 1}`, elevation: i * lay.dims.floorH, height: lay.dims.floorH, properties: { area_construida_m2: round(la) } });
     }
     this.roofLevel = newId();
     b.put({ id: this.roofLevel, kind: "Level", name: "Cubierta", elevation: p.pisos * lay.dims.floorH, height: 0.3 });
@@ -209,9 +258,22 @@ class Designer {
     });
   }
 
+  /** Volúmenes para las fachadas: pabellones y galerías (caras exteriores, coordenadas globales). */
+  private volumes() {
+    const vols: Record<string, unknown>[] = this.lay.wings.map((w) => ({ ...this.wingRect(w), floors: w.floors.length, high: faceToGlobal(w.place, "W") }));
+    for (const k of this.lay.links) vols.push({ x0: Math.min(k.xA, k.xW), x1: Math.max(k.xA, k.xW), y0: round(k.c0 - 0.1), y1: round(k.c1 + 0.1), floors: 1, galeria: true });
+    return vols;
+  }
+  /** Marco de los cortes: el pabellón con la escalera (o el social si la casa es de un piso). */
+  private sectionFrame(): Record<string, number> {
+    const w = this.lay.wings.find((x) => x.floors.length > 1) ?? this.lay.wings[0]!;
+    return { corte_ox: w.place.ox, corte_oy: w.place.oy, corte_giro: w.place.turn, corte_W: w.W, corte_L: w.L, corte_pisos: w.floors.length };
+  }
+
   private elevationScale(): number {
     const H = this.F * this.lay.dims.floorH + 4;
-    const w = Math.max(this.W + this.carportW(), this.L) + 4;
+    const bb = this.bbox();
+    const w = Math.max(bb.x1 - bb.x0 + this.carportW(), bb.y1 - bb.y0) + 4;
     // Cuatro fachadas en una cuadrícula de 2 × 2 sobre ~610 × 555 mm.
     for (const s of [50, 75, 100, 125, 150, 200]) if ((w * 1000) / s <= 270 && (H * 1000) / s <= 230) return s;
     return 250;
@@ -222,6 +284,35 @@ class Designer {
     const id = this.b.wall(this.ls[set]!, a, c, this.lay.dims.floorH, props, name);
     this.walls.push({ id, a, b: c });
     return id;
+  }
+
+  /** Muro de fachada (local) con los vanos de las galerías; la etiqueta de fachada es la orientación global. */
+  private facade(a: Vec2, c: Vec2, face: Face, f: number, gaps: readonly { face: Face; a: number; b: number }[]): void {
+    const g = faceToGlobal(this.wing.place, face);
+    const NAMES: Record<Face, string> = { S: "sur", N: "norte", E: "oriental", W: "occidental" };
+    const name = `Fachada ${NAMES[g]} · piso ${f}${this.wing.key === "A" ? "" : ` · ${this.wing.name.toLowerCase()}`}`;
+    const horiz = face === "S" || face === "N";
+    const t0 = horiz ? a.x : a.y;
+    const t1 = horiz ? c.x : c.y;
+    const at = (t: number) => (horiz ? v(t, a.y) : v(a.x, t));
+    const cuts = gaps.filter((x) => x.face === face).map((x) => [x.a, x.b] as [number, number]);
+    if (!cuts.length) {
+      this.wall(a, c, "fachada", { fachada: g }, name);
+      return;
+    }
+    // Tramos libres entre vanos, en el sentido del muro.
+    const dir = Math.sign(t1 - t0);
+    const lo = Math.min(t0, t1);
+    const hi = Math.max(t0, t1);
+    const pieces: [number, number][] = [];
+    let cur = lo;
+    for (const [ga, gb] of [...cuts].sort((p1, p2) => p1[0] - p2[0])) {
+      if (ga > cur + 0.01) pieces.push([cur, Math.min(ga, hi)]);
+      cur = Math.max(cur, gb);
+    }
+    if (hi > cur + 0.01) pieces.push([cur, hi]);
+    const ordered = dir > 0 ? pieces : pieces.map(([p1, p2]) => [p2, p1] as [number, number]).reverse();
+    for (const [p1, p2] of ordered) this.wall(at(p1), at(p2), "fachada", { fachada: g }, name);
   }
 
   private wallAt(pt: Vec2): Id {
@@ -239,7 +330,7 @@ class Designer {
   private door(center: Vec2, width: number, into: Vec2, hinge: Vec2, desc: string, room?: Room, props?: Props): void {
     this.doorNo++;
     this.b.door(this.wallAt(center), center, width, into, hinge, `P-${this.doorNo} ${desc}`, props);
-    room?.doors.push(center);
+    room?.doors.push(this.G(center));
   }
 
   private window(center: Vec2, width: number, sill: number, h: number, desc: string, room?: Room, props: Props = {}): void {
@@ -264,12 +355,15 @@ class Designer {
     }
     const lux = LUX[type];
     const id = this.b.space(number, name, rect(x0, y0, x1, y1), { ...fin, tipo_espacio: type, ...(lux ? { lux_objetivo: lux } : {}), ...extra });
-    const facades: string[] = [];
-    if (y0 <= 0.21) facades.push("S");
-    if (y1 >= this.L - 0.21) facades.push("N");
-    if (x0 <= 0.21) facades.push("W");
-    if (x1 >= this.W - 0.21) facades.push("E");
-    const r: Room = { level: this.levels[f - 1]!, floor: f, type, name, number, x0, y0, x1, y1, doors: [], facades, windowArea: 0, id };
+    const loc: Face[] = [];
+    if (y0 <= 0.21) loc.push("S");
+    if (y1 >= this.L - 0.21) loc.push("N");
+    if (x0 <= 0.21) loc.push("W");
+    if (x1 >= this.W - 0.21) loc.push("E");
+    const facades = loc.map((k) => faceToGlobal(this.wing.place, k));
+    const ga = this.G(v(x0, y0));
+    const gc = this.G(v(x1, y1));
+    const r: Room = { level: this.levels[f - 1]!, floor: f, type, name, number, x0: Math.min(ga.x, gc.x), y0: Math.min(ga.y, gc.y), x1: Math.max(ga.x, gc.x), y1: Math.max(ga.y, gc.y), doors: [], wing: this.wing.key, facades, windowArea: 0, id };
     this.rooms.push(r);
     return r;
   }
@@ -281,16 +375,22 @@ class Designer {
   // ─── Un piso ────────────────────────────────────────────────
   private buildFloor(f: number): void {
     const { lay, b } = this;
-    const fp = lay.floors[f - 1]!;
+    const wg = this.wing;
+    const fp = wg.floors[f - 1]!;
+    const isA = wg.key === "A";
     b.levelId = this.levels[f - 1]!;
     this.walls = []; // puertas y ventanas solo en los muros de este piso
-    const { xa, xb, xe, W, L } = lay;
+    const { xa, xb, xe, L } = wg;
     const top = L - 0.1;
+    // Vanos hacia las galerías (solo en el primer piso).
+    const gaps = f === 1 ? wg.gaps : [];
+    const noWest = xa - 0.1 < 0.01; // crujía sencilla: sin banda occidental
+    const noEast = xe - xb < 0.01;
     // Fachadas en sentido horario (la cara exterior mira hacia afuera).
-    this.wall(v(xe, 0.1), v(0.1, 0.1), "fachada", { fachada: "S" }, `Fachada sur · piso ${f}`);
-    this.wall(v(0.1, 0.1), v(0.1, top), "fachada", { fachada: "W" }, `Fachada occidental · piso ${f}`);
-    this.wall(v(0.1, top), v(xe, top), "fachada", { fachada: "N" }, `Fachada norte · piso ${f}`);
-    this.wall(v(xe, top), v(xe, 0.1), "fachada", { fachada: "E" }, `Fachada oriental · piso ${f}`);
+    this.facade(v(xe, 0.1), v(0.1, 0.1), "S", f, gaps);
+    this.facade(v(0.1, 0.1), v(0.1, top), "W", f, gaps);
+    this.facade(v(0.1, top), v(xe, top), "N", f, gaps);
+    this.facade(v(xe, top), v(xe, 0.1), "E", f, gaps);
 
     const suiteDepth = fp.suite ? lay.dims.suiteBed + lay.dims.suiteBack : 0;
     const ys = round(top - suiteDepth); // fin del hall
@@ -306,6 +406,7 @@ class Designer {
     const west = place(fp.west);
     const east = place(fp.east);
     const open = (m: Mod) => (m.kind === "cocina" && this.p.cocina === "abierta") || m.kind === "comedor" || m.kind === "sala" || (m.kind === "estar" && f > 1);
+    const passage = (m: Mod) => m.kind === "conexion";
     const wet = (m: Mod) => m.kind === "bano" || m.kind === "bano-social" || m.kind === "servicio" || m.kind === "cocina";
 
     // Muro del hall (lado occidental): solo junto a los módulos cerrados y a la suite.
@@ -319,13 +420,13 @@ class Designer {
       }
       return out;
     };
-    const westItems = west.map((w) => ({ y0: w.y0, y1: w.y1, closed: !open(w.m) }));
+    const westItems = west.map((w) => ({ y0: w.y0, y1: w.y1, closed: !open(w.m) && !passage(w.m) }));
     if (fp.suite) westItems.push({ y0: ys, y1: top, closed: true });
     // El muro del hall junto a la suite solo existe donde la banda occidental no es abierta… y siempre frente a la suite.
     const xaRuns = runs(westItems.map((it) => ({ ...it, y1: Math.min(it.y1, top), y0: it.y0 }))).map(([a, c]) => [a, c] as [number, number]);
     // Donde la suite toca módulos abiertos de la banda occidental, también va muro.
-    for (const [a, c] of xaRuns) this.wall(v(xa, a), v(xa, c), "interior");
-    const eastItems = east.filter((e) => e.y0 < ys - 1e-6).map((e) => ({ y0: e.y0, y1: Math.min(e.y1, ys), closed: e.m.kind !== "escalera" }));
+    if (!noWest) for (const [a, c] of xaRuns) this.wall(v(xa, a), v(xa, c), "interior");
+    const eastItems = east.filter((e) => e.y0 < ys - 1e-6).map((e) => ({ y0: e.y0, y1: Math.min(e.y1, ys), closed: e.m.kind !== "escalera" && !passage(e.m) }));
     for (const [a, c] of runs(eastItems)) this.wall(v(xb, a), v(xb, c), "interior");
 
     // Divisiones entre módulos.
@@ -344,13 +445,26 @@ class Designer {
 
     // Hall / circulación
     const hallTop = fp.suite ? ys - 0.06 : top - 0.1;
-    const hall = this.room(f, "circulacion", f === 1 ? "Hall de acceso y circulación" : "Hall de alcobas", round(xa + 0.06), 0.2, round(xb - 0.06), round(hallTop));
+    const hallName = !isA ? (f === 1 ? `Hall ${wg.name.toLowerCase()}` : "Hall de alcobas") : f === 1 ? (this.multi ? "Hall de acceso y galería" : "Hall de acceso y circulación") : "Hall de alcobas";
+    const hall = this.room(f, "circulacion", hallName, round(xa + (noWest ? 0.1 : 0.06)), 0.2, round(xb - (noEast ? 0.1 : 0.06)), round(hallTop));
     const hallMid = round((xa + xb) / 2);
-    if (f === 1) {
+    if (f === 1 && isA) {
       this.door(v(hallMid, 0.1), Math.min(1.4, xb - xa - 0.25), v(hallMid, 1), v(xb - 0.1, 0.1), `Puerta principal · ${this.st.doorSpec}`, hall, { principal: true });
       b.note("ARQ", "text", [v(hallMid, 1.4)], "NPT ±0.00", { align: "center" }, 1.8);
-    } else this.window(v(hallMid, 0.1), Math.max(0.8, xb - xa - 0.6), 0.9, 1.5, "Ventana del hall", hall);
+    } else if (f > 1) this.window(v(hallMid, 0.1), Math.max(0.8, xb - xa - 0.6), 0.9, 1.5, "Ventana del hall", hall);
     if (!fp.suite) this.window(v(hallMid, top), Math.max(0.8, xb - xa - 0.6), 0.9, 1.5, "Ventana de remate del hall", hall);
+    // Crujía sencilla: el hall es una galería con ventanales sobre la fachada sin banda.
+    if (noWest || noEast) {
+      const fx = noEast ? xe : 0.1;
+      const face: Face = noEast ? "E" : "W";
+      const y1h = fp.suite ? ys : top;
+      const blocked = gaps.filter((g) => g.face === face).map((g) => [g.a - 0.3, g.b + 0.3] as [number, number]);
+      for (let y = 0.6; y + 2.0 <= y1h - 0.4; y += 3.4) {
+        const yc = round(y + 1.0);
+        if (blocked.some(([a, c]) => yc + 1.1 > a && yc - 1.1 < c)) continue;
+        this.window(v(fx, yc), 2.0, 0.45, 2.15, "Ventanal de la galería", hall);
+      }
+    }
 
     for (const w of west) this.module(f, w.m, "W", w.y0, w.y1);
     for (const e of east) this.module(f, e.m, "E", e.y0, Math.min(e.y1, fp.suite ? ys : top));
@@ -365,7 +479,7 @@ class Designer {
    * En la banda occidental se refleja (u crece hacia el occidente).
    */
   private module(f: number, m: Mod, side: "W" | "E", y0a: number, y1a: number): void {
-    const { xa, xb, xe } = this.lay;
+    const { xa, xb, xe } = this.wing;
     const east = side === "E";
     const X0 = east ? xb : xa; // eje del muro del hall
     const X1 = east ? xe : 0.1; // eje de la fachada
@@ -419,8 +533,8 @@ class Designer {
         this.dev("electrodomestico", v(ur(Wd - 1.0), y0), 0, { ancho_m: 0.6, fondo_m: 0.65, rotulo: "SEC", tipo: "redondo" });
         this.dev("lavaplatos", v(gx(split + 0.12), round(y1 - 0.45)), rot(R_W), { ancho_m: 0.6 });
         this.dev("mueble", v(gx(split + 0.12), round(y1 - 0.45)), rot(R_W), { ancho_m: 0.8, fondo_m: 0.6, rotulo: "", carpinteria: "Mueble de lavadero" });
-        this.tg = v(gx(split / 2), round(y1 - 0.1));
-        this.b.device("ELE", "tablero", this.tg, 1.5, { tablero: "TG", descripcion: "Tablero general TG" }, { rot: PI, tag: "TG" });
+        this.tg = this.G(v(gx(split / 2), round(y1 - 0.1)));
+        this.b.device("ELE", "tablero", v(gx(split / 2), round(y1 - 0.1)), 1.5, { tablero: "TG", descripcion: "Tablero general TG" }, { rot: PI, tag: "TG" });
         this.b.device("DOM", "rack", v(gx(split / 2), round(y0 + 0.3)), 0.4, { descripcion: "Rack de comunicaciones: router, switch PoE, NVR, UPS" });
         break;
       }
@@ -513,6 +627,9 @@ class Designer {
         this.dev("mueble", v(gx(Wd), yc), rot(R_E), { ancho_m: round(Math.max(0.6, D - 0.2)), fondo_m: 0.5, tipo: "alto", rotulo: "", carpinteria: "Estantería de depósito" });
         break;
       }
+      case "conexion":
+        // Paso a la galería: el espacio lo crea la galería (buildLinks).
+        break;
       case "escalera": {
         const r = mk("escalera", "Escalera", 0, Wd);
         this.stair(f, gx, rot, y0, Wd);
@@ -565,8 +682,8 @@ class Designer {
       return rect(Math.min(a, c), ya, Math.max(a, c), yb);
     };
     const land = round(sy + g.run1);
-    if (f === 1) this.stairInfo = { escalera_x0: round(Math.min(X(uB0), X(uB0 + fw))), escalera_x1: round(Math.max(X(uB0), X(uB0 + fw))), escalera_y0: sy, escalera_n1: g.n1, escalera_ch: round(g.riser), escalera_h: TREAD, corte_x: round((X(uB0) + X(uB0 + fw)) / 2) };
-    const up = f < this.F;
+    if (f === 1 && (this.wing.key === "A" || !this.stairInfo["escalera_x0"])) this.stairInfo = { escalera_x0: round(Math.min(X(uB0), X(uB0 + fw))), escalera_x1: round(Math.max(X(uB0), X(uB0 + fw))), escalera_y0: sy, escalera_n1: g.n1, escalera_ch: round(g.riser), escalera_h: TREAD, corte_x: round((X(uB0) + X(uB0 + fw)) / 2) };
+    const up = f < this.wing.floors.length;
     const down = f > 1;
     // Tramo 1 (sube hacia el norte)
     if (up || down) {
@@ -589,20 +706,20 @@ class Designer {
 
   /** Suite principal: habitación al sur, vestier y baño al norte. */
   private suite(f: number, ys: number, top: number): void {
-    const { xa, xe } = this.lay;
+    const { xa, xe } = this.wing;
     const { suiteBed } = this.lay.dims;
     const ym2 = round(ys + suiteBed);
     const xs = round(xa + Math.max(2.3, (xe - xa) * 0.42));
     this.wall(v(xa, ym2), v(xe, ym2), "humedo");
     this.wall(v(xs, ym2), v(xs, top), "humedo");
-    const bx0 = round(xa + 0.06);
+    const bx0 = round(xa + (xa - 0.1 < 0.01 ? 0.1 : 0.06));
     const bx1 = round(xe - 0.1);
     const by0 = round(ys + 0.06);
     const by1 = round(ym2 - 0.06);
     const bed = this.room(f, "principal", "Habitación principal", bx0, by0, bx1, by1);
     const closet = this.room(f, "vestier", "Vestier principal", bx0, round(ym2 + 0.06), round(xs - 0.06), round(top - 0.1));
     const bath = this.room(f, "bano", "Baño principal", round(xs + 0.06), round(ym2 + 0.06), bx1, round(top - 0.1));
-    const hallMid = round((xa + this.lay.xb) / 2);
+    const hallMid = round((xa + this.wing.xb) / 2);
     this.door(v(hallMid, ys), 1.0, v(hallMid, by0 + 0.8), v(round(hallMid - 0.5), ys), "Puerta habitación principal, madera de roble h = 2.40", bed);
     this.door(v(round(bx0 + 0.6), ym2), 0.9, v(round(bx0 + 0.6), round(ym2 + 0.8)), v(round(bx0 + 0.15), ym2), "Puerta vestier, corrediza en roble", closet);
     this.door(v(xs, round(ym2 + 0.6)), 0.8, v(round(xs + 0.6), round(ym2 + 0.6)), v(xs, round(ym2 + 0.15)), "Puerta baño principal, corrediza oculta", bath);
@@ -629,23 +746,79 @@ class Designer {
   }
 
   private dims(f: number, west: { y0: number; y1: number }[], east: { y0: number; y1: number }[], ys: number): void {
-    const { W, L, xa, xb, xe } = this.lay;
+    const { W, L, xa, xb, xe } = this.wing;
     const b = this.b;
-    const cp = this.carportW();
+    const isA = this.wing.key === "A";
+    const cp = isA ? this.carportW() : 0;
     const westOff = cp ? cp + 2.6 : 2.6;
-    b.dim(v(0, 0), v(W, 0), -3.6);
-    b.dim(v(0.1, 0.1), v(xa, 0.1), -2.6);
-    b.dim(v(xa, 0.1), v(xb, 0.1), -2.6);
-    b.dim(v(xb, 0.1), v(xe, 0.1), -2.6);
-    b.dim(v(0, 0), v(0, L), westOff + 1.4);
+    // En A no se acotan los costados por donde salen galerías; en B y C el extremo de la galería es el sur local.
+    const linkE = isA && this.lay.links.some((k) => k.side === "E");
+    const linkW = isA && this.lay.links.some((k) => k.side === "W");
+    const seg = (a: Vec2, c: Vec2, off: number) => {
+      if (Math.hypot(c.x - a.x, c.y - a.y) > 0.01) b.dim(a, c, off);
+    };
+    if (isA) {
+      seg(v(0, 0), v(W, 0), -3.6);
+      seg(v(0.1, 0.1), v(xa, 0.1), -2.6);
+      seg(v(xa, 0.1), v(xb, 0.1), -2.6);
+      seg(v(xb, 0.1), v(xe, 0.1), -2.6);
+    } else {
+      seg(v(0.1, round(L - 0.1)), v(xa, round(L - 0.1)), 1.6);
+      seg(v(xa, round(L - 0.1)), v(xb, round(L - 0.1)), 1.6);
+      seg(v(xb, round(L - 0.1)), v(xe, round(L - 0.1)), 1.6);
+    }
     const chainY = (ys_: number[], x: number, off: number) => {
       const pts = [...new Set(ys_.map((y) => round(y)))].sort((a, c) => a - c);
       for (let i = 0; i + 1 < pts.length; i++) b.dim(v(x, pts[i]!), v(x, pts[i + 1]!), off);
     };
-    chainY([0.1, ...west.map((w) => w.y1)], 0.1, westOff);
-    chainY([0.1, ...east.map((e) => Math.min(e.y1, ys)), ys, L - 0.1], xe, -2.6);
-    b.dim(v(W, 0), v(W, L), -3.6);
-    b.dim(v(0, L), v(W, L), f === 1 && this.p.terraza ? 5.2 : 2.6);
+    if (!linkW) {
+      seg(v(0, 0), v(0, L), westOff + 1.4);
+      chainY([0.1, ...west.map((w) => w.y1)], 0.1, westOff);
+    }
+    if (!linkE) {
+      chainY([0.1, ...east.map((e) => Math.min(e.y1, ys)), ys, L - 0.1], xe, -2.6);
+      seg(v(W, 0), v(W, L), -3.6);
+    }
+    seg(v(0, L), v(W, L), f === 1 && isA && this.p.terraza ? 5.2 : isA ? 2.6 : 3.4);
+  }
+
+  // ─── Galerías entre pabellones y patio ──────────────────────
+  private buildLinks(): void {
+    if (!this.multi) return;
+    const b = this.base;
+    b.levelId = this.levels[0]!;
+    this.walls = [];
+    const A = this.lay.wings[0]!;
+    for (const k of this.lay.links) {
+      const w = this.lay.wings.find((x) => x.key === k.to)!;
+      const xmin = Math.min(k.xA, k.xW);
+      const xmax = Math.max(k.xA, k.xW);
+      const nm = w.name.toLowerCase();
+      this.wall(v(xmax, k.c0), v(xmin, k.c0), "fachada", { fachada: "S" }, `Galería al ${nm} · muro sur`);
+      this.wall(v(xmin, k.c1), v(xmax, k.c1), "fachada", { fachada: "N" }, `Galería al ${nm} · muro norte`);
+      const east = k.side === "E";
+      const band = east ? A.xe - A.xb > 0.01 : A.xa - 0.1 > 0.01;
+      const x0 = east ? (band ? A.xb + 0.06 : A.xe + 0.1) : round(k.xW - 0.1);
+      const x1 = east ? round(k.xW + 0.1) : band ? A.xa - 0.06 : 0.0;
+      const r = this.room(1, "circulacion", `Galería al ${nm}`, round(x0), round(k.c0 + 0.1), round(x1), round(k.c1 - 0.1), { galeria: true });
+      const xc = round((k.xA + k.xW) / 2);
+      const ww = round(Math.abs(k.xW - k.xA) - 0.8);
+      this.window(v(xc, k.c0), ww, 0.3, 2.2, "Ventanal de la galería", r, { operacion: "fixed" });
+      this.window(v(xc, k.c1), ww, 0.3, 2.2, "Ventanal de la galería", r);
+    }
+    const pt = this.lay.patio;
+    if (pt) {
+      this.room(1, "terraza", "Patio central", round(pt.x0 + 0.1), round(pt.y0 + 0.1), round(pt.x1 - 0.1), round(pt.y1 - 0.1), { exterior: true });
+      b.note("ARQ", "text", [v(round((pt.x0 + pt.x1) / 2), round((pt.y0 + pt.y1) / 2 - 0.8))], "NPT −0.10 · JARDÍN Y ESPEJO DE AGUA", { align: "center" }, 1.8);
+      b.note("ARQ", "outline", rect(round(pt.x0 + 1.6), round(pt.y0 + 1.6), round(Math.max(pt.x0 + 3.2, pt.x1 - 1.6)), round(Math.max(pt.y0 + 3.2, (pt.y0 + pt.y1) / 2 - 1.4))), undefined, { descripcion: "Espejo de agua" });
+    }
+    const cl = this.lay.closure;
+    if (cl) {
+      const id = b.wall(this.ls["fachada"]!, v(cl.a.x, cl.a.y), v(cl.b.x, cl.b.y), 2.4, { cerramiento: true }, "Muro de cierre del patio");
+      this.walls.push({ id, a: v(cl.a.x, cl.a.y), b: v(cl.b.x, cl.b.y) });
+      const ym = round((cl.a.y + cl.b.y) / 2);
+      this.door(v(cl.a.x, ym), 1.4, v(round(cl.a.x - 1), ym), v(cl.a.x, round(ym - 0.7)), "Portada del patio, madera maciza");
+    }
   }
 
   // ─── Exteriores: parqueadero, terraza, acceso ───────────────
@@ -676,13 +849,25 @@ class Designer {
 
   // ─── Estructura: ejes y columnas ────────────────────────────
   private buildStructure(): void {
-    const { xa, xb, xe, L, W } = this.lay;
-    const xsAx: [string, number][] = [["1", 0.1], ["2", xa], ["3", xb], ["4", xe]];
+    for (const w of this.lay.wings) {
+      this.useWing(w);
+      this.structureOf(w);
+    }
+    this.useWing(this.lay.wings[0]!);
+    this.b.levelId = this.levels[0]!;
+  }
+
+  private structureOf(w: Wing): void {
+    const { xa, xb, xe, L, W } = w;
+    const isA = w.key === "A";
+    const pre = isA ? "" : w.key;
+    const xsAx: [string, number][] = [["1", 0.1], ["2", xa], ["3", xb], ["4", xe]].filter(([, x], i, all) => i === 0 || Math.abs((x as number) - (all[i - 1]![1] as number)) > 0.01).map(([n, x], i) => [`${pre}${isA ? n : i + 1}`, x as number]);
     // Ejes en y: bordes de módulos del primer piso, sin pasar de 6.5 m de luz.
-    const f1 = this.lay.floors[0]!;
+    const f1 = w.floors[0]!;
+    const mods = f1.west.length ? f1.west : f1.east;
     let y = 0.1;
     const cands: number[] = [];
-    for (const m of f1.west) (y += m.depth), cands.push(round(y));
+    for (const m of mods) (y += m.depth), cands.push(round(y));
     const ysAx: number[] = [0.1];
     let last = 0.1;
     for (let i = 0; i < cands.length; i++) {
@@ -693,27 +878,45 @@ class Designer {
     }
     ysAx.push(round(L - 0.1));
     const letters = "ABCDEFGHIJ";
-    const cp = this.carportW();
-    for (let li = 0; li < this.levels.length; li++) {
+    const cp = isA ? this.carportW() : 0;
+    const linkE = isA && this.lay.links.some((k) => k.side === "E");
+    const linkW = isA && this.lay.links.some((k) => k.side === "W");
+    for (let li = 0; li < w.floors.length; li++) {
       this.b.levelId = this.levels[li]!;
       for (const [n, x] of xsAx) {
-        this.b.note("EST", "axis", [v(x, round(L + 0.7 + (li === 0 && this.p.terraza ? 3.6 : 0))), v(x, round(L + 5.2 + (li === 0 && this.p.terraza ? 3.6 : 0)))], n);
-        this.b.note("EST", "axis", [v(x, -4.8), v(x, -8.8)], n);
+        this.b.note("EST", "axis", [v(x, round(L + 0.7 + (li === 0 && isA && this.p.terraza ? 3.6 : 0))), v(x, round(L + 5.2 + (li === 0 && isA && this.p.terraza ? 3.6 : 0)))], n);
+        if (isA) this.b.note("EST", "axis", [v(x, -4.8), v(x, -8.8)], n);
       }
       ysAx.forEach((yy, i) => {
-        this.b.note("EST", "axis", [v(round(-0.7 - cp), yy), v(round(-4.9 - cp - (cp ? 1.4 : 0)), yy)], letters[i]);
-        this.b.note("EST", "axis", [v(round(W + 4.6), yy), v(round(W + 8.6), yy)], letters[i]);
+        if (!linkW) this.b.note("EST", "axis", [v(round(-0.7 - cp), yy), v(round(-4.9 - cp - (cp ? 1.4 : 0)), yy)], `${pre}${letters[i]}`);
+        if (!linkE) this.b.note("EST", "axis", [v(round(W + 4.6), yy), v(round(W + 8.6), yy)], `${pre}${letters[i]}`);
       });
       for (const [, x] of xsAx) for (const yy of ysAx) this.b.note("EST", "solid", rect(x - 0.1, yy - 0.1, x + 0.1, yy + 0.1), undefined, { perfil: "Columna en concreto / HSS 200×200×8 mm embebida en muro" });
     }
-    this.b.levelId = this.levels[0]!;
   }
 
   // ─── Cubierta (planta) ──────────────────────────────────────
   private buildRoof(): void {
+    for (const w of this.lay.wings) {
+      this.useWing(w);
+      this.roofOf(w);
+    }
+    this.useWing(this.lay.wings[0]!);
     const b = this.b;
     b.levelId = this.roofLevel;
-    const { W, L } = this.lay;
+    for (const k of this.lay.links) {
+      const x0 = Math.min(k.xA, k.xW),
+        x1 = Math.max(k.xA, k.xW);
+      b.note("ARQ", "outline", rect(round(x0 + 0.1), round(k.c0 - 0.15), round(x1 - 0.1), round(k.c1 + 0.15)), undefined, { weight: 0.4, descripcion: "Cubierta plana de la galería" });
+      b.note("ARQ", "arrow", [v(round((x0 + x1) / 2), round(k.c1 - 0.2)), v(round((x0 + x1) / 2), round(k.c0 + 0.1))], "1.5 %");
+    }
+  }
+
+  private roofOf(w: Wing): void {
+    const b = this.b;
+    b.levelId = this.roofLevel;
+    const isA = w.key === "A";
+    const { W, L } = w;
     const e = this.p.cubierta === "plana" ? 0 : this.st.alero;
     const x0 = -e,
       y0 = -e,
@@ -754,8 +957,11 @@ class Designer {
       for (const [a, c] of [[v(cx, cy), v(1.2, 1.2)], [v(cx, cy), v(W - 1.2, L - 1.2)]] as const) arrow(a, c);
       for (const at of [v(0.6, 0.6), v(round(W - 0.6), round(L - 0.6))]) b.device("SAN", "bajante", at, 0, { ocultar_rotulo: true }, { name: "Sifón de cubierta con bajante Ø4\"" });
     }
-    b.note("ARQ", "text", [v(round(cx), round(y0 - 1.0))], `CUBIERTA ${ROOF_NAMES[t].toUpperCase()}`, { align: "center", bold: true }, 2.2);
-    b.note("ARQ", "text", [v(round(cx), round(y0 - 1.7))], this.st.roofSpec.toUpperCase().slice(0, 110), { align: "center" }, 1.5);
+    if (isA) {
+      b.note("ARQ", "text", [v(round(cx), round(y0 - 1.0))], `CUBIERTA ${ROOF_NAMES[t].toUpperCase()}`, { align: "center", bold: true }, 2.2);
+      b.note("ARQ", "text", [v(round(cx), round(y0 - 1.7))], this.st.roofSpec.toUpperCase().slice(0, 110), { align: "center" }, 1.5);
+    } else b.note("ARQ", "text", [v(round(cx), round(y1 + 1.0))], `CUBIERTA ${w.name.toUpperCase()}`, { align: "center", bold: true }, 2.0);
+    if (!isA) return;
     const cp = this.carportW();
     if (cp) {
       b.note("ARQ", "outline", rect(-cp, -0.15, x0 < -0.05 ? x0 : -0.05, 6.35), undefined, { weight: 0.4 });
@@ -917,9 +1123,12 @@ class Designer {
             if (d && d.kind === "Device") this.b.put({ ...d, properties: { ...(d.properties ?? {}), circuito: c.number, tablero: "TG" } });
           } else b.device(c.disc === "ILU" ? "ILU" : "ELE", o.sym, o.at, o.h, { circuito: c.number, tablero: "TG", va: o.va, ...(o.sym === "aplique" ? { w: 10, lm: 700 } : {}) }, o.name ? { name: o.name } : {});
         }
-        const start = this.tg;
-        const pts = chain(start, fl.map((o) => o.at));
-        b.run_(c.disc, "CIR", orthoPath([start, ...pts], "y"), { circuito: c.number, tablero: "TG", conductor: c.cond, rotulo_t: 0.5, ...(floor > 1 ? { longitud_extra_m: round((floor - 1) * this.lay.dims.floorH) } : {}) }, `${c.number} · ${c.cond}`);
+        for (const [wk, group] of this.byWing(fl.map((o) => o.at))) {
+          const r = this.feed(wk, floor);
+          const pts = chain(r.start, group);
+          const extra = round(r.extra + (floor > 1 ? (floor - 1) * this.lay.dims.floorH : 0));
+          b.run_(c.disc, "CIR", [...r.lead, ...orthoPath([r.start, ...pts], "y")], { circuito: c.number, tablero: "TG", conductor: c.cond, rotulo_t: 0.5, ...(extra > 0 ? { longitud_extra_m: extra } : {}) }, `${c.number} · ${c.cond}`);
+        }
       }
     }
     // Extractores: al circuito de alumbrado de su piso.
@@ -943,9 +1152,51 @@ class Designer {
     }
   }
 
+  /** Pabellón que contiene un punto (global). */
+  wingAt(pt: Vec2): Wing {
+    for (const w of this.lay.wings.slice(1)) {
+      const r = this.wingRect(w);
+      if (pt.x >= r.x0 - 0.05 && pt.x <= r.x1 + 0.05 && pt.y >= r.y0 - 0.05 && pt.y <= r.y1 + 0.05) return w;
+    }
+    return this.lay.wings[0]!;
+  }
+  private byWing(pts: Vec2[]): [string, Vec2[]][] {
+    const m = new Map<string, Vec2[]>();
+    for (const p of pts) {
+      const k = this.wingAt(p).key;
+      m.set(k, [...(m.get(k) ?? []), p]);
+    }
+    return [...m.entries()].sort((a, c) => a[0].localeCompare(c[0]));
+  }
+  /**
+   * Alimentación desde el tablero general hasta un pabellón: en A sale del tablero; en B y C llega por
+   * la galería (primer piso) o sube por un montante junto al hall (pisos superiores).
+   * `lead` es el tramo dibujado hasta `start`; `extra` es la longitud no dibujada.
+   */
+  feed(wk: string, floor: number): { start: Vec2; lead: Vec2[]; extra: number } {
+    const tg = this.tg;
+    if (wk === "A") return { start: tg, lead: [], extra: 0 };
+    const w = this.lay.wings.find((x) => x.key === wk)!;
+    const k = this.lay.links.find((x) => x.to === wk)!;
+    const A = this.lay.wings[0]!;
+    const yc = round((k.c0 + k.c1) / 2);
+    const hx = round((A.xa + A.xb) / 2);
+    const inW = toGlobal(w.place, round((w.xa + w.xb) / 2), 0.7);
+    const p2 = v(inW.x, inW.y);
+    const path = [...orthoPath([tg, v(hx, yc)], "y"), p2];
+    if (floor === 1) return { start: p2, lead: path.slice(0, -1), extra: 0 };
+    const len = path.reduce((t, q, i) => (i ? t + Math.abs(q.x - path[i - 1]!.x) + Math.abs(q.y - path[i - 1]!.y) : 0), 0);
+    return { start: p2, lead: [], extra: round(len) };
+  }
+
   // ─── Redes hidrosanitarias, lluvias y comunicaciones ───────
   private buildNetworks(): void {
-    const c: NetCtx = { b: this.b, p: this.p, lay: this.lay, levels: this.levels, roofLevel: this.roofLevel, rooms: this.rooms, carport: this.carportW(), tg: this.tg, eave: this.p.cubierta === "plana" ? 0 : this.st.alero };
+    const wings = this.lay.wings.map((w) => {
+      this.useWing(w);
+      return { w, b: this.b, rect: this.wingRect(w) };
+    });
+    this.useWing(this.lay.wings[0]!);
+    const c: NetCtx = { b: this.b, p: this.p, lay: this.lay, levels: this.levels, roofLevel: this.roofLevel, rooms: this.rooms, carport: this.carportW(), tg: this.tg, eave: this.p.cubierta === "plana" ? 0 : this.st.alero, wings };
     buildWater(c);
     buildSanitary(c);
     buildRain(c);
@@ -957,9 +1208,9 @@ class Designer {
   private buildSheets(): void {
     const VP = { x: 30, y: 15, w: 616, h: 564 };
     const col = { x: 657, w: 168 };
-    const { W, L } = this.lay;
+    const bb = this.bbox();
     const cp = this.carportW();
-    const ext = { x0: -cp - 7.5, x1: W + 9, y0: -9, y1: L + (this.p.terraza ? 3.6 : 0) + 6 };
+    const ext = { x0: Math.min(bb.x0, -cp) - 7.5, x1: bb.x1 + 9, y0: bb.y0 - 9, y1: Math.max(bb.y1, this.lay.L + (this.p.terraza ? 3.6 : 0)) + 6 };
     let scale = 50;
     for (const s of [50, 75, 100, 125, 150, 200]) {
       scale = s;
@@ -1126,11 +1377,15 @@ function splitBy<T>(list: T[], max: number, w: (t: T) => number): T[][] {
 // ─── Notas de los planos ─────────────────────────────────────
 
 function notes(p: HouseProgram, st: StyleDef, lay: Layout): Record<string, string[]> {
-  const area = (lay.W * lay.L * p.pisos).toFixed(1);
+  const area = builtArea(lay).toFixed(1);
   const g = stairGeometry(lay.dims.floorH, lay.dims.flight);
+  const multi = lay.wings.length > 1;
   return {
     ARQ: [
-      `Vivienda unifamiliar de ${p.pisos} ${p.pisos === 1 ? "piso" : "pisos"}, estilo ${st.name.toLowerCase()}: ${area} m² construidos (${lay.W.toFixed(2)} × ${lay.L.toFixed(2)} m por piso).`,
+      multi
+        ? `Vivienda unifamiliar ${lay.notes[0]?.replace(/^Planta /, "en planta ").replace(/:.*/, "") ?? ""}, estilo ${st.name.toLowerCase()}: ${area} m² construidos en ${lay.wings.length} pabellones (${lay.wings.map((w) => `${w.name.toLowerCase()} ${w.W.toFixed(1)} × ${w.L.toFixed(1)} m, ${w.floors.length} ${w.floors.length === 1 ? "piso" : "pisos"}`).join("; ")}).`
+        : `Vivienda unifamiliar de ${p.pisos} ${p.pisos === 1 ? "piso" : "pisos"}, estilo ${st.name.toLowerCase()}: ${area} m² construidos (${lay.W.toFixed(2)} × ${lay.L.toFixed(2)} m por piso).`,
+      ...(multi ? ["Galerías acristaladas entre pabellones con cubierta plana impermeabilizada; los pabellones tienen cubiertas independientes."] : []),
       "Cotas en metros. Cotas exteriores a ejes estructurales y a caras de fachada; interiores a ejes de muros.",
       `Altura libre: ${CEILING.toFixed(2)} m bajo cielo falso; altura entre pisos ${lay.dims.floorH.toFixed(2)} m.`,
       st.facadeSpec,

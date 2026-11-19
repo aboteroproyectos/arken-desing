@@ -7,7 +7,7 @@
 import { BimStore, type Device } from "@arken/core";
 import { reportChapters } from "@arken/calc";
 import type { DesignResult, Room } from "./build";
-import { stairGeometry, TREAD } from "./layout";
+import { builtArea, footprintBox, stairGeometry, TREAD } from "./layout";
 import type { RoomType } from "./finishes";
 
 export type ReviewLevel = "ok" | "aviso" | "falla";
@@ -93,7 +93,7 @@ export function reviewDesign(r: DesignResult): Review {
     const hasVestier = rm.type === "principal" && rooms.some((x) => x.type === "vestier" && x.floor === rm.floor);
     add("Programa", `${rm.number} ${rm.name}: clóset`, hasCloset || hasVestier ? "ok" : "aviso", hasVestier ? "Vestier propio." : hasCloset ? "Clóset en madera (ver C-03)." : "Sin clóset: el espacio no alcanza; revisar.");
   }
-  const built = lay.W * lay.L * p.pisos;
+  const built = builtArea(lay);
   if (p.areaObjetivo > 0) {
     const dev = (built - p.areaObjetivo) / p.areaObjetivo;
     add("Programa", "Área construida", Math.abs(dev) <= 0.1 ? "ok" : "aviso", `${built.toFixed(0)} m² frente a ${p.areaObjetivo.toFixed(0)} m² pedidos (${dev >= 0 ? "+" : ""}${(dev * 100).toFixed(0)} %).`);
@@ -102,11 +102,21 @@ export function reviewDesign(r: DesignResult): Review {
   // 4. Implantación en el lote (retiros de referencia: 3 m al frente, 1.5 m laterales, 3 m al fondo).
   if (p.loteFrente > 0 && p.loteFondo > 0) {
     const carport = p.parqueaderos > 0 ? Math.min(p.parqueaderos, 2) * 3.1 : 0;
-    const needW = lay.W + carport + 3;
-    const needL = lay.L + (p.terraza ? 3.6 : 0) + 6;
+    const bb = footprintBox(lay);
+    const needW = bb.x1 - bb.x0 + carport + 3;
+    const needL = bb.y1 - bb.y0 + (p.terraza ? 3.6 : 0) + 6;
     const fits = needW <= p.loteFrente + 1e-6 && needL <= p.loteFondo + 1e-6;
     add("Lote", "Implantación", fits ? "ok" : "falla", `La casa con parqueadero y retiros necesita ${needW.toFixed(1)} × ${needL.toFixed(1)} m; el lote es de ${p.loteFrente} × ${p.loteFondo} m.${fits ? "" : " Aumente pisos o reduzca el programa."}`);
   } else add("Lote", "Implantación", "aviso", "Sin medidas del lote: verifique retiros y norma urbana antes de implantar.");
+
+  // Composición por pabellones.
+  if (lay.wings.length > 1) {
+    add("Composición", "Pabellones y galerías", "ok", `${lay.wings.length} pabellones (${lay.wings.map((w) => w.name.toLowerCase()).join(", ")}) unidos por galerías acristaladas: zona social y privada separadas, todas las alcobas con fachada propia.`);
+    if (lay.patio) {
+      const pw = Math.min(lay.patio.x1 - lay.patio.x0, lay.patio.y1 - lay.patio.y0);
+      add("Composición", "Patio central", pw >= 6 ? "ok" : "aviso", `${(lay.patio.x1 - lay.patio.x0).toFixed(1)} × ${(lay.patio.y1 - lay.patio.y0).toFixed(1)} m (lado mínimo recomendado 6 m para luz y privacidad entre alas).`);
+    }
+  }
 
   // 5. Estructura.
   add("Estructura", "Predimensionamiento", p.pisos > 3 ? "aviso" : "ok", p.pisos > 3 ? "Más de 3 pisos: requiere diseño estructural detallado (NSR-10) antes de fijar ejes y columnas." : "Ejes y columnas de predimensionamiento; diseño estructural NSR-10 por ingeniero.");
