@@ -186,7 +186,7 @@ function drawTitleBlock(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y:
   p.text("PLANO N.º", x + 1.5, cy - 3, 1.6, "left", false, "#5b6068");
   p.text(sheet.number, x + w * 0.31, bottom + (cy - bottom) / 2 - 4, 9, "center", true, BRAND);
   p.text("HOJA", x + w * 0.62 + 1.5, cy - 3, 1.6, "left", false, "#5b6068");
-  p.text(`${idx} DE ${sheets.length}`, x + w * 0.81, bottom + (cy - bottom) / 2 - 2, 3.2, "center", true);
+  p.text(F["hoja"] || `${idx} DE ${sheets.length}`, x + w * 0.81, bottom + (cy - bottom) / 2 - 2, 3.2, "center", true);
   p.text(F["archivo"] ?? "", x + w * 0.81, bottom + 2.5, 1.4, "center", false, "#5b6068");
 }
 

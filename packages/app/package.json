@@ -15,6 +15,7 @@
     "@arken/spatial": "*",
     "@arken/calc": "*",
     "@arken/sheets": "*",
-    "@arken/projects": "*"
+    "@arken/projects": "*",
+    "@arken/terrain": "*"
   }
 }

@@ -48,6 +48,8 @@ import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
 import { calcReportHtml, type ReportChapter } from "@arken/calc";
 import { canvasMeasure, download, modelDxf, sheetDxf, sheetPdfPage, sheetPng, sheetSvg } from "./export";
 import { PdfDocument } from "./pdf";
+import { Terrain, decodeSurvey, defaultPlacement, encodeSurvey, readSurvey, sampleSurveyDxf, type Placement } from "@arken/terrain";
+import { TerrainView, houseFootprint, implantationSheet, siteEarthwork, surveyCsv, topoChapter, topoDxf, type Site } from "./topo";
 import { safeName, zip, type ZipEntry } from "./zip";
 import { onImageLoaded } from "./paint";
 import { PlanRenderer } from "./renderer";
@@ -1174,8 +1176,9 @@ async function downloadDxf(name: string, text: string): Promise<void> {
   }
 }
 
-async function sheetsPdf(sheets: readonly Sheet[], title: string): Promise<Uint8Array<ArrayBuffer>> {
+async function sheetsPdf(sheets: readonly Sheet[], title: string, before?: (doc: PdfDocument) => Promise<void>): Promise<Uint8Array<ArrayBuffer>> {
   const doc = new PdfDocument(canvasMeasure, title);
+  if (before) await before(doc);
   for (const s of sheets) await sheetPdfPage(doc, store, s, sheetGeometry(s), sheetItems(s));
   return doc.build();
 }
@@ -1218,7 +1221,10 @@ async function savePackage(): Promise<void> {
       files.push({ name: `DXF/${name}.dxf`, data: sheetDxf(store, s, sheetGeometry(s), sheetItems(s)) });
     }
     say("Uniendo el juego completo de planos…", true);
-    files.push({ name: `PDF/${arkenName("JUEGO COMPLETO DE PLANOS")}.pdf`, data: await sheetsPdf(sheets, `Juego de planos · ${projectLabel()}`) });
+    const full = new PdfDocument(canvasMeasure, `Juego de planos · ${projectLabel()}`);
+    await extraPdf(full);
+    if (full.pages.length) files.push({ name: `PDF/${arkenName("T-01 TOPOGRAFIA E IMPLANTACION")}.pdf`, data: await full.build() });
+    files.push({ name: `PDF/${arkenName("JUEGO COMPLETO DE PLANOS")}.pdf`, data: await sheetsPdf(sheets, `Juego de planos · ${projectLabel()}`, extraPdf) });
     files.push({ name: `DXF/${arkenName("MODELO EN METROS")}.dxf`, data: modelDxf(store, engine.all()) });
     files.push({ name: `MEMORIAS/${arkenName("MEMORIAS DE CALCULO")}.html`, data: reportHtml() });
     files.push({ name: `MODELO/${arkenName("MODELO BIM")}.arken.json`, data: JSON.stringify(store.snapshot(), null, 2) });
@@ -1232,8 +1238,9 @@ async function savePackage(): Promise<void> {
   }
 }
 
-/** Archivos adicionales del paquete (topografía). */
+/** Archivos y páginas adicionales del paquete (topografía). */
 let extraFiles: () => ZipEntry[] = () => [];
+let extraPdf: (doc: PdfDocument) => Promise<void> = async () => {};
 
 function readme(sheets: readonly Sheet[]): string {
   return [
@@ -1270,6 +1277,174 @@ function showReport(): void {
   });
   document.body.appendChild(box);
 }
+// ─── Topografía: levantamiento, terreno 3D e implantación ────
+let terrainCache: { json: string; terrain: Terrain } | undefined;
+function currentSite(): Site | undefined {
+  const pr = projectEntity();
+  const props = pr?.properties ?? {};
+  const json = typeof props["topografia"] === "string" ? props["topografia"] : "";
+  if (!json) return undefined;
+  if (terrainCache?.json !== json) {
+    const sv = decodeSurvey(json);
+    if (!sv) return undefined;
+    terrainCache = { json, terrain: new Terrain(sv) };
+  }
+  const n = (k: string) => (typeof props[k] === "number" ? (props[k] as number) : NaN);
+  const footprint = houseFootprint(store, pr);
+  let placement: Placement = { x: n("topo_x"), y: n("topo_y"), rotDeg: n("topo_rot"), npt: n("topo_npt") };
+  if (![placement.x, placement.y, placement.rotDeg, placement.npt].every(Number.isFinite)) {
+    const xs = footprint.map((q) => q.x), ys = footprint.map((q) => q.y);
+    placement = defaultPlacement(terrainCache.terrain, { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) });
+  }
+  const h = typeof props["cubierta_alta_m"] === "number" ? (props["cubierta_alta_m"] as number) : 3.2;
+  return { terrain: terrainCache.terrain, placement, footprint, height: h };
+}
+function putSite(patch: Record<string, string | number>, label: string): void {
+  const pr = projectEntity();
+  if (!pr) return say("El modelo no tiene proyecto.");
+  const properties = { ...(pr.properties ?? {}) } as Record<string, PropertyValue>;
+  for (const [k, v] of Object.entries(patch)) properties[k] = v;
+  put({ ...pr, properties }, label);
+}
+function implantation(site: Site) {
+  return implantationSheet(store, site, allSheets(store)[0], engine.all(), siteEarthwork(site));
+}
+extraChapters = () => {
+  const site = currentSite();
+  return site ? [topoChapter(site)] : [];
+};
+extraFiles = () => {
+  const site = currentSite();
+  if (!site) return [];
+  const imp = implantation(site);
+  return [
+    { name: `DXF/${arkenName("TOPOGRAFIA E IMPLANTACION")}.dxf`, data: topoDxf(store, site, engine.all()) },
+    { name: `DXF/${arkenName("T-01 TOPOGRAFIA E IMPLANTACION PLANO")}.dxf`, data: sheetDxf(store, imp.sheet, buildSheet(store, imp.sheet), imp.items) },
+    { name: `TOPOGRAFIA/${arkenName("PUNTOS DEL LEVANTAMIENTO")}.csv`, data: surveyCsv(site) },
+  ];
+};
+extraPdf = async (doc) => {
+  const site = currentSite();
+  if (!site) return;
+  const imp = implantation(site);
+  await sheetPdfPage(doc, store, imp.sheet, buildSheet(store, imp.sheet), imp.items);
+};
+
+function showTopo(): void {
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.innerHTML = `<div class="modal-card topo"><div class="modal-bar"><b>Topografía e implantación</b><span></span><button data-a="x">Cerrar</button></div>
+<div class="topo-body"><div class="topo-view"><canvas></canvas><div class="topo-tools"><button data-a="3d">3D</button><button data-a="top">Planta</button><label>Exageración <input data-a="exag" type="range" min="1" max="5" step="0.5" value="1.5"></label></div></div>
+<aside class="topo-side panel"></aside></div></div>`;
+  const canvas = box.querySelector("canvas")!;
+  const side = box.querySelector<HTMLElement>(".topo-side")!;
+  const view = new TerrainView(canvas);
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = ".dxf,.csv,.txt,.xyz";
+  const load = (text: string, name: string) => {
+    try {
+      const sv = readSurvey(text, name);
+      putSite({ topografia: encodeSurvey(sv), topo_x: NaN, topo_y: NaN, topo_rot: NaN, topo_npt: NaN }, "Cargar levantamiento topográfico");
+      const site = currentSite();
+      if (site) putSite({ topo_x: round2(site.placement.x), topo_y: round2(site.placement.y), topo_rot: 0, topo_npt: site.placement.npt }, "Implantar la casa");
+      say(`Levantamiento leído: ${sv.stats["leidos"]} puntos con cota (${sv.points.length} usados).`, true);
+    } catch (err) {
+      say(err instanceof Error ? err.message : String(err));
+    }
+    render();
+  };
+  file.addEventListener("change", async () => {
+    const f0 = file.files?.[0];
+    file.value = "";
+    if (f0) load(await f0.text(), f0.name);
+  });
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const fx = (v: number, d = 2) => (Number.isFinite(v) ? v.toLocaleString("es-CO", { minimumFractionDigits: d, maximumFractionDigits: d }) : "—");
+  function render(): void {
+    const site = currentSite();
+    view.site = site;
+    view.draw();
+    let html = `<h2>Levantamiento</h2><p class="muted">Plano del topógrafo en DXF (puntos, polilíneas 3D, curvas con elevación, bloques con atributo de cota) o archivo de puntos PNEZD (.csv / .txt).</p>
+<div class="logo-btns"><button class="primary" data-a="load">Cargar levantamiento…</button><button data-a="sample">Ejemplo</button></div>`;
+    if (site) {
+      const t = site.terrain;
+      const ew = siteEarthwork(site);
+      const pl = site.placement;
+      html += `<p class="muted">${esc(t.survey.source)} · ${t.survey.points.length} puntos · ${t.tin.tris.length} triángulos<br>Cotas ${fx(t.zMin)} a ${fx(t.zMax)} m · curvas cada ${fx(t.contourInterval())} m</p>
+<h2>Ubicar la casa</h2><div class="fields">
+${field("X origen casa (m)", "topo_x", round2(pl.x), "number", 'step="0.5"')}
+${field("Y origen casa (m)", "topo_y", round2(pl.y), "number", 'step="0.5"')}
+${field("Giro (°)", "topo_rot", round2(pl.rotDeg), "number", 'step="1"')}
+${field("NPT ±0.00 (m)", "topo_npt", round2(pl.npt), "number", 'step="0.05"')}
+</div><div class="logo-btns" style="margin-top:8px"><button data-a="balance">NPT de equilibrio (${fx(ew.balancedNpt)})</button><button data-a="center">Centrar</button></div>
+<h2>Movimiento de tierras</h2><table class="kv-mini">
+<tr><td>Terreno bajo la casa</td><td>${fx(ew.zMin)} a ${fx(ew.zMax)} m</td></tr>
+<tr><td>Pendiente media</td><td>${fx(ew.slopePct, 1)} %</td></tr>
+<tr><td>Subrasante</td><td>${fx(ew.platform)} m</td></tr>
+<tr><td><b>Corte</b></td><td><b>${fx(ew.cut, 1)} m³</b></td></tr>
+<tr><td><b>Lleno</b></td><td><b>${fx(ew.fill, 1)} m³</b></td></tr>
+${ew.outside > 0 ? `<tr><td colspan="2" class="warn">${fx(ew.outside, 1)} m² de la casa quedan fuera del levantamiento.</td></tr>` : ""}
+</table>
+<h2>Exportar</h2><div class="logo-btns"><button data-a="pdf">Plano T-01 (PDF)</button><button data-a="dxf">DXF topográfico</button></div>
+<p class="muted">El plano de implantación, el DXF y el capítulo de topografía de las memorias también entran en "Guardar planos".</p>`;
+    }
+    side.innerHTML = html;
+    side.querySelectorAll<HTMLInputElement>("[data-field]").forEach((inp) =>
+      inp.addEventListener("change", () => {
+        const v = Number(inp.value);
+        if (!Number.isFinite(v)) return;
+        const cur = currentSite();
+        if (!cur) return;
+        const pl = cur.placement;
+        putSite({ topo_x: pl.x, topo_y: pl.y, topo_rot: pl.rotDeg, topo_npt: pl.npt, [inp.dataset.field!]: v }, "Mover la implantación");
+        render();
+      }),
+    );
+  }
+  box.addEventListener("click", async (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (ev.target === box || a === "x") return box.remove();
+    const site = currentSite();
+    if (a === "load") file.click();
+    else if (a === "sample") load(sampleSurveyDxf(), "Levantamiento de ejemplo (Alto de Las Palmas).dxf");
+    else if (a === "3d") (view.yaw = -0.6), (view.pitch = 0.8), view.draw();
+    else if (a === "top") view.topView();
+    else if (a === "balance" && site) {
+      const pl = site.placement;
+      putSite({ topo_x: pl.x, topo_y: pl.y, topo_rot: pl.rotDeg, topo_npt: siteEarthwork(site).balancedNpt }, "NPT de equilibrio");
+      render();
+    } else if (a === "center" && site) {
+      const xs = site.footprint.map((q) => q.x), ys = site.footprint.map((q) => q.y);
+      const d = defaultPlacement(site.terrain, { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) });
+      putSite({ topo_x: round2(d.x), topo_y: round2(d.y), topo_rot: 0, topo_npt: d.npt }, "Centrar la casa en el lote");
+      render();
+    } else if (a === "pdf" && site) {
+      try {
+        const imp = implantation(site);
+        const doc = new PdfDocument(canvasMeasure, "T-01 Topografía e implantación");
+        await sheetPdfPage(doc, store, imp.sheet, buildSheet(store, imp.sheet), imp.items);
+        await download(`${arkenName("T-01 TOPOGRAFIA E IMPLANTACION")}.pdf`, new Blob([await doc.build()], { type: "application/pdf" }));
+        say("Plano de implantación descargado.", true);
+      } catch (err) {
+        say(err instanceof Error ? err.message : String(err));
+      }
+    } else if (a === "dxf" && site) {
+      downloadDxf(arkenName("TOPOGRAFIA E IMPLANTACION"), topoDxf(store, site, engine.all())).then(
+        () => say("DXF topográfico descargado.", true),
+        (err: unknown) => say(err instanceof Error ? err.message : String(err)),
+      );
+    }
+  });
+  box.querySelector<HTMLInputElement>('[data-a="exag"]')!.addEventListener("input", (e) => {
+    view.exag = Number((e.target as HTMLInputElement).value);
+    view.draw();
+  });
+  document.body.appendChild(box);
+  render();
+  new ResizeObserver(() => view.draw()).observe(canvas);
+}
+$<HTMLButtonElement>("#topo").addEventListener("click", showTopo);
 $<HTMLButtonElement>("#package").addEventListener("click", () => void savePackage());
 $<HTMLButtonElement>("#report").addEventListener("click", showReport);
 document.querySelectorAll<HTMLButtonElement>("[data-export]").forEach((b) => b.addEventListener("click", () => void exportSheet(b.dataset.export!)));
