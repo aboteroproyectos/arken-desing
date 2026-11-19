@@ -775,3 +775,88 @@ function snapMm(max: number): number {
   const sc = [50, 75, 100, 125, 150, 200].find((k) => 1000 / k <= max) ?? 200;
   return 1000 / sc;
 }
+
+// ─── Esquema vertical de montantes y bajantes ────────────────
+
+/**
+ * Esquema vertical (isométrico simplificado) de la red: montantes de agua fría, caliente y retorno,
+ * bajantes sanitarias con su ventilación y bajantes de aguas lluvias, con diámetros y niveles.
+ */
+export function drawRiserDiagram(p: Pen, reader: ModelReader, b: SheetBlock): void {
+  const levels = [...reader.entities()].filter((e): e is Level => e.kind === "Level").sort((a, c) => a.elevation - c.elevation);
+  if (!levels.length) return;
+  const devices = [...reader.entities()].filter((e): e is Device => e.kind === "Device");
+  const runs = [...reader.entities()].filter((e) => e.kind === "Run") as unknown as { tag?: string; system: string; discipline: string; properties?: Props }[];
+  const top = levels[levels.length - 1]!.elevation;
+  const zmin = -1.2;
+  const zmax = top + 1.2;
+  p.text(b.title ?? "ESQUEMA VERTICAL DE MONTANTES Y BAJANTES · SIN ESCALA", b.x, b.y + b.h - 3, 2.6, "left", true, BRAND);
+  const y0 = b.y + 12;
+  const hgt = b.h - 26;
+  const Y = (z: number) => y0 + ((z - zmin) / (zmax - zmin)) * hgt;
+  const x0 = b.x + 30;
+  // Niveles
+  for (const l of levels) {
+    p.line([[x0 - 4, Y(l.elevation)], [b.x + b.w - 4, Y(l.elevation)]], { weight: 0.2, dash: [3, 1.2], color: "#8a8f96" });
+    p.text((l.name ?? "").toUpperCase(), b.x, Y(l.elevation) + 1.2, 2.4, "left", true, INK);
+    p.text(`N ${l.elevation >= 0 ? "+" : ""}${fmt(l.elevation)}`, b.x, Y(l.elevation) - 3.0, 2.0, "left", false, "#555a60");
+  }
+  p.line([[x0 - 4, Y(-0.6)], [b.x + b.w - 4, Y(-0.6)]], { weight: 0.15, dash: [1, 1], color: "#a0a5ab" });
+  p.text("TERRENO / REDES ENTERRADAS", b.x, Y(-0.6) - 2.6, 1.6, "left", false, "#555a60");
+  const floors = levels.filter((l) => l.name !== "Cubierta");
+  const nf = floors.length;
+  const runBy = (tag: string) => runs.find((r) => typeof r.properties?.["tramo"] === "string" && (r.properties["tramo"] as string).startsWith(tag + " "));
+  const diam = (tag: string, d: string) => {
+    const r = runBy(tag);
+    const s = r ? str(r.properties ?? {}, "diametro", d) : d;
+    return s.replace("Multicapa ", "Ø").replace(" aislada", "").replace(" RDE 21", "");
+  };
+  type Col = { name: string; color: string; z0: number; z1: number; segs: { z0: number; z1: number; label: string }[]; foot: string; head?: string; stubs: { z: number; label: string }[] };
+  const cols: Col[] = [];
+  const HID = "#1565c0", HOT = "#c62828", RET = "#ef6c00", SAN = "#5d4037", LLU = "#00838f", VEN = "#7b8a8b";
+  const fz = (i: number) => floors[i]!.elevation;
+  const ap = runBy("AP-1");
+  const trunk = (sys: string, f: number) => {
+    const t = runBy(`${sys}-${f}.T1`) ?? runBy(`${sys}-${f}.1`);
+    return t ? `Piso ${f}: ${str(t.properties ?? {}, "diametro", "").replace("Multicapa ", "Ø").replace(" aislada", "")}` : `Piso ${f}`;
+  };
+  cols.push({ name: "MH · AGUA FRÍA", color: HID, z0: -0.6, z1: fz(nf - 1) + 0.4, segs: [{ z0: -0.6, z1: fz(0), label: ap ? diam("AP-1", "") : "" }, ...floors.slice(0, -1).map((l, i) => ({ z0: l.elevation + 0.4, z1: fz(i + 1) + 0.4, label: diam(`MH-${i + 1}`, "") }))], foot: "Desde equipo de presión y tanque de reserva", stubs: floors.map((l, i) => ({ z: l.elevation + 0.4, label: trunk("AF", i + 1) })) });
+  cols.push({ name: "MC · AGUA CALIENTE", color: HOT, z0: fz(0) + 0.4, z1: fz(nf - 1) + 0.4, segs: floors.slice(0, -1).map((l, i) => ({ z0: l.elevation + 0.4, z1: fz(i + 1) + 0.4, label: diam(`MC-${i + 1}`, "") })), foot: "Desde calentador de acumulación", stubs: floors.map((l, i) => ({ z: l.elevation + 0.4, label: trunk("AC", i + 1) })) });
+  if (nf > 1) cols.push({ name: "RC · RETORNO", color: RET, z0: fz(0) + 0.6, z1: fz(nf - 1) + 0.6, segs: [{ z0: fz(0) + 0.6, z1: fz(nf - 1) + 0.6, label: "Ø16 aislada" }], foot: "A bomba de recirculación", stubs: [] });
+  // Bajantes sanitarias
+  const ban = new Map<string, { zs: number[]; name: string }>();
+  for (const d of devices)
+    if (d.symbol === "bajante-an" && d.tag) {
+      const it = ban.get(d.tag) ?? { zs: [], name: d.name ?? "" };
+      it.zs.push(levelOf(reader, d.id)?.elevation ?? 0);
+      ban.set(d.tag, it);
+    }
+  for (const [tag, it] of [...ban].sort((a, c) => a[0].localeCompare(c[0], "es", { numeric: true }))) {
+    const zt = Math.max(...it.zs);
+    const room = /\(([^,]+),/.exec(it.name)?.[1] ?? "";
+    cols.push({ name: `${tag} · AGUAS NEGRAS`, color: SAN, z0: -0.6, z1: zt, segs: [{ z0: -0.6, z1: zt, label: "Ø4\" PVC sanitaria" }], foot: "A caja de inspección", head: "Ventilación Ø2\" + 0.60 m", stubs: [{ z: zt, label: room }] });
+  }
+  // Bajantes de aguas lluvias
+  const ball = new Set(devices.filter((d) => d.symbol === "bajante" && d.tag?.startsWith("BALL")).map((d) => d.tag!));
+  if (ball.size) cols.push({ name: `BALL ×${ball.size} · LLUVIAS`, color: LLU, z0: -0.6, z1: top, segs: [{ z0: -0.6, z1: top, label: "Ø4\" PVC aguas lluvias" }], foot: "A cajas de aguas lluvias", stubs: [{ z: top, label: "Canal / sifón" }] });
+  const step = Math.min(78, (b.w - 50) / Math.max(1, cols.length));
+  cols.forEach((c, i) => {
+    const x = x0 + 14 + i * step;
+    if (c.head) {
+      p.line([[x, Y(c.z1)], [x, Y(top + 0.6)]], { weight: 0.4, dash: [1.8, 0.9], color: VEN });
+      p.line([[x - 1.6, Y(top + 0.6)], [x + 1.6, Y(top + 0.6)]], { weight: 0.5, color: VEN });
+      p.text(c.head, x + 2, Y(top + 0.6) + 1, 1.8, "left", false, VEN);
+    }
+    p.line([[x, Y(c.z0)], [x, Y(c.z1)]], { weight: 0.9, color: c.color });
+    for (const sg of c.segs) if (sg.label) p.text(sg.label, x - 1.4, (Y(sg.z0) + Y(sg.z1)) / 2, 2.0, "center", true, c.color, Math.PI / 2);
+    for (const st of c.stubs) {
+      p.line([[x, Y(st.z)], [x + 9, Y(st.z)]], { weight: 0.6, color: c.color });
+      p.circle(x, Y(st.z), 0.8, { fill: "solid", color: c.color, weight: 0.1 });
+      if (st.label) p.text(st.label, x + 2, Y(st.z) + 1.4, 1.8, "left", false, c.color);
+    }
+    p.text(c.name, x, Y(zmax) - 1, 2.2, "center", true, c.color);
+    p.text(c.foot, x, Y(zmin) - 1, 1.7, "center", false, "#555a60");
+    p.circle(x, Y(c.z0), 1.0, { weight: 0.35, color: c.color });
+  });
+  p.text("Derivaciones a cada piso según las plantas H y S. Diámetros calculados con NTC 1500 (Hunter / unidades de descarga).", b.x, b.y + 3, 2.0, "left", false, "#555a60");
+}

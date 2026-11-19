@@ -9,6 +9,7 @@ import { completeProgram, ROOF_NAMES, type HouseProgram, type ProgramDraft } fro
 import { layoutHouse, stairGeometry, TREAD, type Layout, type Mod } from "./layout";
 import { finishProps, LUX, type RoomType } from "./finishes";
 import { STYLES, type StyleDef } from "./styles";
+import { buildComms, buildRain, buildSanitary, buildWater, type NetCtx } from "./networks";
 
 const PI = Math.PI;
 const R_W = -PI / 2; // contra el muro occidental (local: contra el muro del hall)
@@ -96,6 +97,7 @@ class Designer {
     this.buildStructure();
     this.buildRoof();
     this.buildElectrical();
+    this.buildNetworks();
     this.buildSheets();
     this.finishProject();
     return this.b.snapshot();
@@ -933,6 +935,15 @@ class Designer {
     }
   }
 
+  // ─── Redes hidrosanitarias, lluvias y comunicaciones ───────
+  private buildNetworks(): void {
+    const c: NetCtx = { b: this.b, p: this.p, lay: this.lay, levels: this.levels, roofLevel: this.roofLevel, rooms: this.rooms, carport: this.carportW(), tg: this.tg, eave: this.p.cubierta === "plana" ? 0 : this.st.alero };
+    buildWater(c);
+    buildSanitary(c);
+    buildRain(c);
+    buildComms(c);
+  }
+
   // ─── Planos ─────────────────────────────────────────────────
   private buildSheets(): void {
     const VP = { x: 30, y: 15, w: 616, h: 564 };
@@ -1015,6 +1026,49 @@ class Designer {
       { type: "cuadro-acometida", x: 300, y: 20, w: 345, h: 135 },
       { type: "notas", x: col.x, y: 112, w: col.w, h: 430, lines: N.UNI },
     ], { escala: "Sin escala" }, far);
+    this.networkSheets(sheet, N, col, fl);
+  }
+
+  private networkSheets(sheet: (number: string, title: string, levelId: Id, disciplines: string[], background: string[], blocks: { type: string; x: number; y: number; w: number; h: number; lines?: readonly string[] }[], fields?: Record<string, string>, c?: Vec2) => void, N: Record<string, string[]>, col: { x: number; w: number }, fl: (i: number) => string): void {
+    let h = 0;
+    this.levels.forEach((lvl, i) =>
+      sheet(`H-${pad(++h)}`, `Instalaciones hidráulicas: agua fría, caliente y recirculación${fl(i)}`, lvl, ["HID"], ["ARQ", "EST"], [
+        { type: "convenciones", x: col.x, y: 440, w: col.w, h: 105 },
+        { type: "cuadro-hidraulico", x: col.x, y: 228, w: col.w, h: 208 },
+        { type: "notas", x: col.x, y: 112, w: col.w, h: 112, lines: N.HID },
+      ]),
+    );
+    sheet(`H-${pad(++h)}`, "Esquema vertical de montantes y bajantes", this.levels[0]!, [], [], [
+      { type: "esquema-vertical", x: 34, y: 20, w: 610, h: 555 },
+      { type: "notas", x: col.x, y: 112, w: col.w, h: 430, lines: [...N.HID!.slice(0, 4), ...N.SAN!.slice(2, 3)] },
+    ], { escala: "Sin escala" }, v(1000, 1000));
+    let s = 0;
+    this.levels.forEach((lvl, i) =>
+      sheet(`S-${pad(++s)}`, `Instalaciones sanitarias${i === 0 ? " y aguas lluvias" : ""}${fl(i)}`, lvl, ["SAN"], ["ARQ", "EST"], i === 0
+        ? [
+            { type: "convenciones", x: col.x, y: 455, w: col.w, h: 90 },
+            { type: "cuadro-sanitario", x: col.x, y: 262, w: col.w, h: 189 },
+            { type: "cuadro-lluvias", x: col.x, y: 182, w: col.w, h: 76 },
+            { type: "notas", x: col.x, y: 112, w: col.w, h: 66, lines: N.SAN!.slice(0, 3) },
+          ]
+        : [
+            { type: "convenciones", x: col.x, y: 455, w: col.w, h: 90 },
+            { type: "cuadro-sanitario", x: col.x, y: 262, w: col.w, h: 189 },
+            { type: "notas", x: col.x, y: 112, w: col.w, h: 146, lines: N.SAN },
+          ]),
+    );
+    sheet(`S-${pad(++s)}`, "Cubierta: canales y bajantes de aguas lluvias", this.roofLevel, ["SAN"], ["ARQ"], [
+      { type: "convenciones", x: col.x, y: 455, w: col.w, h: 90 },
+      { type: "cuadro-lluvias", x: col.x, y: 330, w: col.w, h: 120 },
+      { type: "notas", x: col.x, y: 112, w: col.w, h: 214, lines: N.SAN!.slice(5) },
+    ]);
+    let d = 0;
+    this.levels.forEach((lvl, i) =>
+      sheet(`D-${pad(++d)}`, `Comunicaciones, seguridad y domótica${fl(i)}`, lvl, ["DOM"], ["ARQ", "EST"], [
+        { type: "convenciones", x: col.x, y: 330, w: col.w, h: 215 },
+        { type: "notas", x: col.x, y: 112, w: col.w, h: 214, lines: N.DOM },
+      ]),
+    );
   }
 
   private finishProject(): void {
@@ -1088,6 +1142,31 @@ function notes(p: HouseProgram, st: StyleDef, lay: Layout): Record<string, strin
     MUEBLES: ["Muebles en tablero aglomerado / MDF RH 18 mm con enchape en melamina de alta presión o chapa de roble natural.", "Herrajes con cierre lento (bisagras y correderas de extensión total).", "Clósets: maletero superior, módulos de colgar a 1.00 y 1.80 m, cajoneras y zapatero.", "Cocina: mueble inferior h = 0.90 m con encimera en cuarzo 20 mm; alacena superior h = 0.70 m a 1.50 m del piso.", "Medidas en metros, a verificar en obra."],
     ELE: ["Diseño según RETIE (Res. 40117 de 2024) y NTC 2050. Sistema monofásico trifilar 120/240 V.", "Tomas generales a 0.30 m; tomas de mesón a 1.10 m.", "Conductores de cobre THHN/THWN-2; calibre mínimo #12 en tomas y #14 en alumbrado.", "Protección GFCI en cocina, baños, ropas y exteriores.", "Los recorridos son esquemáticos; su longitud alimenta el cálculo de caída de tensión. Los circuitos de pisos superiores suman la subida (longitud adicional)."],
     ILU: ["Diseño según RETILAP; iluminancias por el método de los lúmenes (CU 0.55, FM 0.80).", "Luminarias LED 3000 K, IRC ≥ 90, regulables; IP44 en baños.", "Extracción mecánica en baños sin ventana."],
+    HID: [
+      "Diseño según NTC 1500 (Código colombiano de fontanería) y RAS. Caudales probables por el método de Hunter; velocidad máxima 1.8 m/s.",
+      "Red interior en tubería multicapa PEX-AL-PEX con accesorios de compresión; agua caliente aislada con coquilla de espuma elastomérica 13 mm.",
+      "Suministro: acometida PVC 1\" → medidor → tanque de reserva enterrado → equipo de presión con variador → montante MH en el hall.",
+      "Agua caliente: calentador eléctrico de acumulación en ropas; montante MC y retorno de recirculación RC con bomba temporizada (agua caliente inmediata en todos los baños).",
+      "Registro de corte por recinto húmedo; electroválvula general comandada por los sensores de inundación (ver D).",
+      "Prueba hidrostática a 150 psi durante 2 horas antes de cerrar muros y placas. Desinfección con hipoclorito antes de la entrega.",
+      "Alturas de salidas: lavamanos 0.55 m, sanitario 0.20 m, ducha 1.10 m (mezclador 1.20 m), lavaplatos 0.55 m, lavadora 1.10 m.",
+    ],
+    SAN: [
+      "Diseño según NTC 1500. Unidades de descarga por aparato; pendiente mínima 2 % en colectores interiores y exteriores.",
+      "Tubería PVC sanitaria; Ø4\" en todo tramo con sanitario, Ø3\" en cocina y ropas, Ø2\" en lavamanos y rejillas.",
+      "Bajantes BAN en PVC Ø4\" por el muro de fachada, con ventilación Ø2\" prolongada 0.60 m sobre la cubierta y sombrerete.",
+      "Cajas de inspección en mampostería pañetada e impermeabilizada, 60×60 cm (80×80 en la caja final), tapa en concreto con marco metálico; distancia máxima entre cajas 12 m.",
+      "Cocina con trampa de grasas antes de la red; sifón en cada aparato y rejilla de piso con sello hidráulico en baños y ropas.",
+      "Aguas lluvias por red separada (método racional, i = 120 mm/h, C = 0.95): canales, bajantes BALL Ø4\", cajas de 50×50 cm y tanque de aprovechamiento para riego.",
+      "Prueba de estanqueidad con columna de agua de 3 m durante 15 minutos antes de rellenar zanjas.",
+    ],
+    DOM: [
+      "Cableado estructurado Cat 6A (ANSI/TIA-568) desde el rack del cuarto técnico; tubería conduit independiente de la red eléctrica (separación ≥ 0.30 m).",
+      "Red WiFi 6 con puntos de acceso PoE en techo; cámaras IP PoE con grabación en el NVR del rack (30 días).",
+      "Domótica en bus KNX: teclados de escenas, sensores de presencia, temperatura y humedad, control de iluminación y persianas.",
+      "Seguridad: detectores de humo fotoeléctricos (NFPA 72), sensores de inundación que cierran la electroválvula general, contactos magnéticos y cerradura inteligente.",
+      "Videoportero IP en el acceso, integrado a la app del propietario. UPS de 1.5 kVA para el rack.",
+    ],
     UNI: ["Diagrama y cuadros generados desde los circuitos y las salidas del modelo.", "Carga de cada circuito = suma de sus salidas; tomas generales a 180 VA.", "Caída de tensión ≤ 3 % por circuito; conductores aumentados donde hace falta.", "Acometida por el método estándar de NTC 2050 Sec. 220."],
   };
 }

@@ -679,7 +679,7 @@ function projectHas(reader: ModelReader, key: string): boolean {
   return false;
 }
 
-export const BLOCK_TYPES = ["convenciones", "notas", "unifilar", "fachadas", "cortes", "puertas", "ventanas", "muebles", ...Object.keys(TABLES)];
+export const BLOCK_TYPES = ["convenciones", "notas", "unifilar", "fachadas", "cortes", "puertas", "ventanas", "muebles", "esquema-vertical", ...Object.keys(TABLES)];
 
 export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   const { k, toWorld } = sheetTransform(sheet);
@@ -755,6 +755,7 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
     else if (b.type === "puertas") drawDoorSchedule(p, reader, b);
     else if (b.type === "ventanas") drawWindowSchedule(p, reader, b);
     else if (b.type === "muebles") drawFurniture(p, reader, b);
+    else if (b.type === "esquema-vertical") drawRiserDiagram(p, reader, b);
     else if (TABLES[b.type]) drawTable(p, TABLES[b.type]!(reader, sheet.levelId), b.x, b.y + b.h, b.w, b.h);
   }
   const box = (x: number, y: number, w: number, h: number): AABB2 => {
@@ -764,5 +765,5 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   };
   return { primitives: p.out, paper: box(0, 0, paper.w, paper.h), viewport: box(vp.x, vp.y, vp.w, vp.h), k };
 }
-import { drawDoorSchedule, drawFurniture, drawSections, drawStyledElevations, drawWindowSchedule, finishesTable, floorFinishTable } from "./details";
+import { drawDoorSchedule, drawFurniture, drawRiserDiagram, drawSections, drawStyledElevations, drawWindowSchedule, finishesTable, floorFinishTable } from "./details";
 export { LOGO_ARKEN_DISENO, LOGO_ASPECT } from "./logo";

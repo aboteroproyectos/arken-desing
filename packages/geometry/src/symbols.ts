@@ -206,6 +206,9 @@ const LIST: SymbolDef[] = [
       b.text(str(c.props["rotulo"], "TANQUE"), 0, 0, 1.6, "center", true);
     },
   },
+  { key: "calentador-electrico", discipline: "HID", name: "Calentador eléctrico de acumulación (capacidad indicada)", draw: (b) => labeled(b, "CAE", 4, 2.6) },
+  { key: "montante", discipline: "HID", name: "Montante vertical de agua (sube / baja entre pisos)", draw: (b, c) => { b.circle(0, 0, 1.5, { fill: "solid", color: "#ffffff", weight: 0.3 }).circle(0, 0, 0.6, F); b.text(str(c.props["rotulo"], "M"), 1.9, 0.9, 1.4, "left", true); } },
+  { key: "bajante-an", discipline: "SAN", name: "Bajante de aguas residuales Ø 4\" (con ventilación a cubierta)", draw: (b, c) => { b.circle(0, 0, 1.7, W).circle(0, 0, 0.7, F); b.text(str(c.props["rotulo"], "BAN"), 2.1, 1.3, 1.3, "left"); } },
   { key: "calentador", discipline: "HID", name: "Calentador de paso a gas, tiro forzado, 20 L/min", draw: (b) => labeled(b, "CAL", 4, 2.6) },
   { key: "llave-jardin", discipline: "HID", name: "Llave de jardín / manguera 1/2\" con antisifón", draw: (b) => { b.circle(0, 0, 1, { fill: "solid", color: "#1c6dd0" }); b.text("LL", 1.6, 1.2, 1.3, "left"); } },
   { key: "filtro", discipline: "HID", name: "Filtro de sedimentos y carbón activado", draw: (b) => labeled(b, "F", 2.2, 2.2) },
