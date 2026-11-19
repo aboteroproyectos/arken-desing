@@ -63,7 +63,7 @@ export function sheetTransform(sheet: Sheet): { k: number; toWorld: (x: number, 
 }
 
 /** Pinta en mm de papel y traduce al mundo. */
-class Pen {
+export class Pen {
   constructor(
     readonly w: (x: number, y: number) => Vec2,
     readonly k: number,
@@ -662,9 +662,16 @@ const TABLES: Record<string, (r: ModelReader, levelId: Id) => Table> = {
   "cuadro-lluvias": (r) => rainTable(r),
   "cuadro-gas": (r, l) => gasTable(r, l),
   "cuadro-solar": (r) => solarTable(r),
+  "cuadro-acabados": (r) => finishesTable(r),
+  "cuadro-pisos": (r, l) => floorFinishTable(r, l),
 };
 
-export const BLOCK_TYPES = ["convenciones", "notas", "unifilar", "fachadas", ...Object.keys(TABLES)];
+function projectHas(reader: ModelReader, key: string): boolean {
+  for (const e of reader.entities()) if (e.kind === "Project") return e.properties?.[key] !== undefined;
+  return false;
+}
+
+export const BLOCK_TYPES = ["convenciones", "notas", "unifilar", "fachadas", "cortes", "puertas", "ventanas", "muebles", ...Object.keys(TABLES)];
 
 export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   const { k, toWorld } = sheetTransform(sheet);
@@ -733,7 +740,11 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
     if (b.type === "convenciones") drawLegend(p, reader, sheet, b);
     else if (b.type === "notas") drawNotes(p, b);
     else if (b.type === "unifilar") drawSingleLine(p, reader, b);
-    else if (b.type === "fachadas") drawElevations(p, reader, sheet, b);
+    else if (b.type === "fachadas") (projectHas(reader, "cubierta_tipo") ? drawStyledElevations(p, reader, b) : drawElevations(p, reader, sheet, b));
+    else if (b.type === "cortes") drawSections(p, reader, b);
+    else if (b.type === "puertas") drawDoorSchedule(p, reader, b);
+    else if (b.type === "ventanas") drawWindowSchedule(p, reader, b);
+    else if (b.type === "muebles") drawFurniture(p, reader, b);
     else if (TABLES[b.type]) drawTable(p, TABLES[b.type]!(reader, sheet.levelId), b.x, b.y + b.h, b.w, b.h);
   }
   const box = (x: number, y: number, w: number, h: number): AABB2 => {
@@ -743,4 +754,5 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   };
   return { primitives: p.out, paper: box(0, 0, paper.w, paper.h), viewport: box(vp.x, vp.y, vp.w, vp.h), k };
 }
+import { drawDoorSchedule, drawFurniture, drawSections, drawStyledElevations, drawWindowSchedule, finishesTable, floorFinishTable } from "./details";
 export { LOGO_ARKEN_DISENO, LOGO_ASPECT } from "./logo";

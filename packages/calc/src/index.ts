@@ -67,7 +67,10 @@ export function areaTable(reader: ModelReader, levelId?: Id): Table {
   for (const s of inner) rows.push({ cells: [s.number, s.name ?? "", str(s.properties?.["piso"]), f(polygonArea(s.boundary))] });
   const net = inner.reduce((t, s) => t + polygonArea(s.boundary), 0);
   rows.push({ cells: ["", "ÁREA ÚTIL INTERIOR", "", f(net)], bold: true });
-  const built = projectNumber(reader, "area_construida_m2", 0);
+  // En casas de varios pisos cada nivel guarda su propia área construida.
+  const lvl = levelId ? reader.getEntity(levelId) : undefined;
+  const lvlBuilt = typeof lvl?.properties?.["area_construida_m2"] === "number" ? (lvl.properties["area_construida_m2"] as number) : undefined;
+  const built = lvlBuilt ?? projectNumber(reader, "area_construida_m2", 0);
   if (built > 0) {
     rows.push({ cells: ["", "Muros, columnas y ductos", "", f(built - net)] });
     rows.push({ cells: ["", "ÁREA CONSTRUIDA CUBIERTA", "", f(built)], bold: true });
@@ -122,11 +125,13 @@ export function circuitResults(reader: ModelReader): CircuitResult[] {
     // Caída de tensión por el método de momentos eléctricos: cada salida aporta I_i × L_i, donde L_i es
     // la distancia desde el tablero medida sobre el recorrido dibujado más 2.5 m de bajante/subida en muro.
     // Las cargas sin recorrido o de equipos sin VA propio se suponen al final del circuito (conservador).
-    const runLen = own_runs.reduce((t, r) => t + polylineLength(r.points), 0);
+    const runLen = own_runs.reduce((t, r) => t + polylineLength(r.points) + num(r.properties?.["longitud_extra_m"], 0), 0);
     let moment = 0;
     let lengthM = 0;
     for (const d of own) {
-      const along = own_runs.length ? Math.min(...own_runs.map((r) => distanceAlong(r.points, d.position))) : runLen;
+      // `longitud_extra_m`: tramo que no se dibuja en la planta del recorrido (subida a otro piso, ida desde el tablero).
+      const extra = (r: (typeof own_runs)[number]) => num(r.properties?.["longitud_extra_m"], 0);
+      const along = own_runs.length ? Math.min(...own_runs.map((r) => distanceAlong(r.points, d.position) + extra(r))) : runLen;
       const L = along + 2.5;
       lengthM = Math.max(lengthM, L);
       moment += (deviceVA(d) / c.voltage) * L;
