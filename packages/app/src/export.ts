@@ -2,7 +2,7 @@
 
 import { PAPER_MM, type ModelReader, type Sheet, type Vec2 } from "@arken/core";
 import { sheetTransform, type SheetGeometry } from "@arken/sheets";
-import { FONT, paintCanvas, primitivesToSvg, toDxf, type DxfEntity } from "./paint";
+import { FONT, paintCanvas, preloadImages, primitivesToSvg, toDxf, type DxfEntity } from "./paint";
 import type { Visible } from "./scene";
 
 function paperXf(sheet: Sheet): { toPaper(p: Vec2): Vec2; mmPerM: number; toPaperUp(p: Vec2): Vec2 } {
@@ -15,15 +15,23 @@ function paperXf(sheet: Sheet): { toPaper(p: Vec2): Vec2; mmPerM: number; toPape
   };
 }
 
+/** Ventana del dibujo en mm de papel (y hacia abajo), ya recortada por el rótulo escalado. */
+function paperClip(sheet: Sheet, geo: SheetGeometry): { x: number; y: number; w: number; h: number } {
+  const xf = paperXf(sheet);
+  const a = xf.toPaper({ x: geo.viewport.minX, y: geo.viewport.maxY });
+  const b = xf.toPaper({ x: geo.viewport.maxX, y: geo.viewport.minY });
+  return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
+}
+
 export function sheetSvg(model: ModelReader, sheet: Sheet, geo: SheetGeometry, items: readonly Visible[]): string {
   const { w, h } = PAPER_MM[sheet.paper];
   const xf = paperXf(sheet);
-  const vp = sheet.viewport;
+  const vp = paperClip(sheet, geo);
   const body = items.map((it) => primitivesToSvg(model, it.geom.primitives, xf, { background: it.background })).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" font-family='${FONT}'>
 <title>${sheet.number} ${sheet.title}</title>
-<defs><clipPath id="vp"><rect x="${vp.x}" y="${h - vp.y - vp.h}" width="${vp.w}" height="${vp.h}"/></clipPath></defs>
+<defs><clipPath id="vp"><rect x="${vp.x}" y="${vp.y}" width="${vp.w}" height="${vp.h}"/></clipPath></defs>
 <g id="hoja">
 ${primitivesToSvg(model, geo.primitives, xf)}
 </g>
@@ -44,11 +52,12 @@ export async function sheetPng(model: ModelReader, sheet: Sheet, geo: SheetGeome
   const xf = { toScreen: (p: Vec2) => { const q = xf0.toPaper(p); return { x: q.x * pxPerMm, y: q.y * pxPerMm }; }, pxPerMm, pxPerM: pxPerMm * xf0.mmPerM };
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await preloadImages(geo.primitives);
   paintCanvas(ctx, model, geo.primitives, xf);
-  const vp = sheet.viewport;
+  const vp = paperClip(sheet, geo);
   ctx.save();
   ctx.beginPath();
-  ctx.rect(vp.x * pxPerMm, (h - vp.y - vp.h) * pxPerMm, vp.w * pxPerMm, vp.h * pxPerMm);
+  ctx.rect(vp.x * pxPerMm, vp.y * pxPerMm, vp.w * pxPerMm, vp.h * pxPerMm);
   ctx.clip();
   for (const it of items) paintCanvas(ctx, model, it.geom.primitives, xf, { background: it.background });
   ctx.restore();

@@ -108,6 +108,39 @@ export function textColor(p: Extract<PlanPrimitive, { kind: "text" }>, mode: Pai
 export const TEXT_EM = 1.1;
 export const FONT = 'Arial, "Helvetica Neue", Helvetica, sans-serif';
 
+// ─── Imágenes (logos) ───────────────────────────────────────
+
+const IMAGES = new Map<string, HTMLImageElement>();
+let imageListener: (() => void) | undefined;
+
+/** Se llama cuando termina de cargar una imagen que ya se pidió dibujar (para redibujar). */
+export function onImageLoaded(fn: () => void): void {
+  imageListener = fn;
+}
+
+function imageFor(src: string): HTMLImageElement | undefined {
+  let img = IMAGES.get(src);
+  if (!img) {
+    img = new Image();
+    img.onload = () => imageListener?.();
+    img.src = src;
+    IMAGES.set(src, img);
+  }
+  return img.complete && img.naturalWidth > 0 ? img : undefined;
+}
+
+/** Espera a que carguen las imágenes de estas primitivas (antes de exportar). */
+export async function preloadImages(prims: Iterable<PlanPrimitive>): Promise<void> {
+  const waits: Promise<void>[] = [];
+  for (const p of prims) {
+    if (p.kind !== "image") continue;
+    imageFor(p.src);
+    const img = IMAGES.get(p.src)!;
+    if (!img.complete) waits.push(new Promise((res) => img.addEventListener("load", () => res(), { once: true })));
+  }
+  await Promise.all(waits);
+}
+
 // ─── Lienzo (canvas) ────────────────────────────────────────
 
 export interface CanvasXf {
@@ -120,6 +153,14 @@ export interface CanvasXf {
 
 export function paintCanvas(ctx: CanvasRenderingContext2D, model: ModelReader, prims: Iterable<PlanPrimitive>, xf: CanvasXf, mode: PaintMode = {}): void {
   for (const p of prims) {
+    if (p.kind === "image") {
+      const img = imageFor(p.src);
+      if (!img) continue;
+      const a = xf.toScreen(p.points[3]!);
+      const b = xf.toScreen(p.points[1]!);
+      ctx.drawImage(img, a.x, a.y, b.x - a.x, b.y - a.y);
+      continue;
+    }
     if (p.kind === "text") {
       const size = p.height * xf.pxPerM;
       if (size < 0.9) continue;
@@ -178,6 +219,12 @@ export interface SvgXf {
 export function primitivesToSvg(model: ModelReader, prims: Iterable<PlanPrimitive>, xf: SvgXf, mode: PaintMode = {}): string {
   const out: string[] = [];
   for (const p of prims) {
+    if (p.kind === "image") {
+      const a = xf.toPaper(p.points[3]!);
+      const b = xf.toPaper(p.points[1]!);
+      out.push(`<image href="${p.src}" x="${n(a.x)}" y="${n(a.y)}" width="${n(b.x - a.x)}" height="${n(b.y - a.y)}" preserveAspectRatio="none"/>`);
+      continue;
+    }
     if (p.kind === "text") {
       const size = p.height * xf.mmPerM;
       const at = xf.toPaper(p.at);
@@ -216,6 +263,7 @@ export function toDxf(model: ModelReader, items: Iterable<DxfEntity>, xf: { toPa
   const layers = new Set<string>();
   const ents: string[][] = [];
   for (const { layer, prim } of items) {
+    if (prim.kind === "image") continue;
     layers.add(layer);
     const L: string[] = [];
     const add = (code: number, v: string | number) => L.push(String(code), typeof v === "number" ? n(v) : v);

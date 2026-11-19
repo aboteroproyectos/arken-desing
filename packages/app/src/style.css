@@ -1,11 +1,15 @@
 :root {
-  --bg: #f6f5f1;
+  --bg: #f3f4f7;
   --panel: #ffffff;
-  --ink: #23262b;
-  --muted: #6b7078;
-  --line: #d9d6cf;
-  --accent: #0f3d3e;
-  --accent-2: #1f6feb;
+  --ink: #142339;
+  --muted: #5f6b7d;
+  --line: #d9dde4;
+  --accent: #142339;
+  --accent-2: #ba985b;
+  --navy: #142339;
+  --navy-2: #0b1525;
+  --gold: #ba985b;
+  --gold-soft: #e9dcc2;
   --danger: #c4372b;
   color-scheme: light;
 }
@@ -20,10 +24,23 @@ body {
 }
 .toolbar {
   display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
-  padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+  padding: 7px 12px; background: linear-gradient(180deg, var(--navy) 0%, var(--navy-2) 100%);
+  border-bottom: 3px solid var(--gold); color: #e8ebf0;
 }
-.brand { letter-spacing: 0.12em; color: var(--accent); margin-right: 4px; }
-.brand span { font-weight: 400; }
+.brand { display: flex; align-items: center; gap: 8px; margin-right: 6px; color: #fff; text-decoration: none; }
+.brand img { height: 34px; width: auto; display: block; background: #fff; border-radius: 6px; padding: 2px 3px; }
+.brand b { display: block; letter-spacing: 0.14em; font-size: 14px; line-height: 1.1; }
+.brand b span { color: var(--gold); font-weight: 600; }
+.brand small { display: block; font-size: 9.5px; letter-spacing: 0.22em; color: #aeb7c6; }
+.toolbar button, .toolbar select {
+  background: rgba(255, 255, 255, 0.06); color: #eef1f5; border-color: rgba(217, 221, 228, 0.28);
+}
+.toolbar select option { color: var(--ink); background: #fff; }
+.toolbar button:hover:not(:disabled) { border-color: var(--gold); }
+.toolbar button[aria-pressed="true"] { background: var(--gold); border-color: var(--gold); color: var(--navy-2); }
+.toolbar .chip[aria-pressed="true"] { color: #fff; }
+.toolbar .primary { background: var(--gold); border-color: var(--gold); color: var(--navy-2); font-weight: 600; }
+.toolbar label.group { color: #c9d0db; }
 .group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .group[hidden] { display: none; }
 button, select, input {
@@ -50,7 +67,13 @@ kbd { font-size: 10px; opacity: 0.7; margin-left: 2px; }
 main { position: relative; min-height: 0; display: grid; grid-template-columns: 1fr 320px; }
 canvas { width: 100%; height: 100%; display: block; touch-action: none; min-width: 0; }
 .panel { overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 10px 14px 24px; }
-.panel h2 { font-size: 14px; margin: 10px 0 4px; color: var(--accent); }
+.panel h2 { font-size: 14px; margin: 12px 0 6px; color: var(--accent); padding-bottom: 4px; border-bottom: 2px solid var(--gold-soft); }
+.panel button.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+.range { display: flex; gap: 6px; align-items: center; }
+.range input { flex: 1; padding: 0; }
+.range b { font-size: 12px; color: var(--ink); min-width: 42px; text-align: right; }
+.logo-btns { display: flex; gap: 4px; }
+.logo-btns button { padding: 3px 7px; font-size: 12px; background: #fff; }
 .panel h3 { font-size: 12px; margin: 14px 0 4px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .panel .muted { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
 .fields, .props { display: grid; gap: 6px; }
@@ -64,10 +87,10 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; min-widt
 .addprop input { min-width: 0; padding: 4px 6px; background: #fff; }
 .status {
   display: flex; gap: 16px; justify-content: space-between;
-  padding: 6px 12px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted);
+  padding: 6px 12px; background: var(--navy-2); border-top: 2px solid var(--gold); color: #aeb7c6;
 }
-.message { color: var(--danger); flex: 1; text-align: center; }
-.message.ok { color: var(--muted); }
+.message { color: #ff9a8f; flex: 1; text-align: center; }
+.message.ok { color: #e8ebf0; }
 #coords { font-variant-numeric: tabular-nums; white-space: nowrap; }
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; grid-template-rows: 1fr 40%; }

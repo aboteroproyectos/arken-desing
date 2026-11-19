@@ -56,6 +56,15 @@ export type PlanPrimitive =
       readonly style: StyleKey;
     } & Paint)
   | {
+      /** Imagen rectangular (logos del rótulo). `points` = esquinas inf-izq, inf-der, sup-der, sup-izq. */
+      readonly kind: "image";
+      readonly points: readonly Vec2[];
+      /** URL de datos (PNG o JPEG). */
+      readonly src: string;
+      readonly style: StyleKey;
+      readonly color?: string;
+    }
+  | {
       readonly kind: "text";
       readonly at: Vec2;
       readonly text: string;

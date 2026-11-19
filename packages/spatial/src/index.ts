@@ -111,6 +111,7 @@ function angleInArc(a: number, start: number, end: number): boolean {
 export function distanceToPrimitive(p: Vec2, prim: PlanPrimitive): number {
   switch (prim.kind) {
     case "polygon":
+    case "image":
       return pointInPolygon(p, prim.points) ? 0 : distToPolyline(p, prim.points, true);
     case "polyline":
       return distToPolyline(p, prim.points, false);
@@ -149,8 +150,8 @@ export function primitiveTouchesRect(prim: PlanPrimitive, r: AABB2): boolean {
     { x: r.maxX, y: r.maxY },
     { x: r.minX, y: r.maxY },
   ];
-  if ((prim.kind === "polygon" || prim.kind === "text") && corners.some((c) => pointInPolygon(c, pts))) return true;
-  const closed = prim.kind === "polygon" || prim.kind === "text";
+  if ((prim.kind === "polygon" || prim.kind === "text" || prim.kind === "image") && corners.some((c) => pointInPolygon(c, pts))) return true;
+  const closed = prim.kind === "polygon" || prim.kind === "text" || prim.kind === "image";
   const segs = pts.length - (closed ? 0 : 1);
   for (let i = 0; i < segs; i++) {
     const a = pts[i]!;

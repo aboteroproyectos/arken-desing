@@ -43,9 +43,10 @@ import {
 } from "@arken/core";
 import { PlanGeometryEngine, RUN_STYLES, SYMBOLS, buildWallFrame, toLocal } from "@arken/geometry";
 import { buildLote01 } from "@arken/projects";
-import { allSheets, buildSheet, titleFields, type SheetGeometry } from "@arken/sheets";
+import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
 import { download, printSvg, sheetDxf, sheetPng, sheetSvg } from "./export";
+import { onImageLoaded } from "./paint";
 import { PlanRenderer } from "./renderer";
 import { editableFilter, levelOfView, sheetOf, visibleGeoms, type ViewMode } from "./scene";
 import { Viewport } from "./viewport";
@@ -108,6 +109,13 @@ const symbolSelect = $<HTMLSelectElement>("#symbol");
 const systemSelect = $<HTMLSelectElement>("#system");
 const panel = $<HTMLDivElement>("#panel");
 
+// Marca ARKEN 360: logo de ARKEN DISEÑO en la barra y como icono de la pestaña (va dentro del código, sirve sin servidor).
+$<HTMLImageElement>("#brand-logo").src = LOGO_ARKEN_DISENO;
+{
+  const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]') ?? document.head.appendChild(Object.assign(document.createElement("link"), { rel: "icon" }));
+  icon.href = LOGO_ARKEN_DISENO;
+}
+
 const view = new Viewport();
 const renderer = new PlanRenderer(canvas, view);
 
@@ -163,6 +171,8 @@ function requestDraw(): void {
     renderer.draw(store, items, s?.scale ?? 50, { selected: selection, hovered, snap, selectionRect, sketch }, s ? sheetGeometry(s) : undefined);
   });
 }
+
+onImageLoaded(() => requestDraw());
 
 function say(text: string, ok = false): void {
   messageEl.textContent = text;
@@ -790,6 +800,11 @@ function renderTitlePanel(): void {
   const s = currentSheet();
   const tb = project?.titleBlock ?? {};
   let html = `<h2>Rótulo del proyecto</h2><p class="muted">Vale para todos los planos. Cada plano puede cambiar un campo abajo.</p><div class="fields" data-scope="project">`;
+  const esc0 = Number(tb["rotulo_escala"]) || 1;
+  html += `<label class="f"><span>Tamaño del rótulo</span><span class="range"><input data-field="rotulo_escala" type="range" min="0.8" max="1.6" step="0.05" value="${esc0}"><b>${Math.round(esc0 * 100)} %</b></span></label>`;
+  const logo = (tb["logo"] ?? "").trim();
+  const logoName = logo.toLowerCase() === "ninguno" ? "Sin logo" : logo.startsWith("data:image/") ? "Logo propio" : "ARKEN DISEÑO";
+  html += `<div class="f"><span>Logo (${logoName})</span><span class="logo-btns"><button type="button" data-logo="subir">Subir…</button><button type="button" data-logo="arken">ARKEN</button><button type="button" data-logo="ninguno">Quitar</button></span></div>`;
   for (const [k, l] of TITLE_FIELDS) if (k !== "escala") html += field(l, k, tb[k] ?? "");
   html += `</div>`;
   if (s) {
@@ -801,6 +816,23 @@ function renderTitlePanel(): void {
     html += `</div><p class="muted">Un campo vacío usa el valor del proyecto.</p>`;
   }
   panel.innerHTML = html;
+  const putTb = (patch: Record<string, string>, label: string) => {
+    if (!project) return;
+    const titleBlock: Record<string, string> = { ...(project.titleBlock ?? {}), ...patch };
+    for (const [k, v] of Object.entries(patch)) if (!v) delete titleBlock[k];
+    put({ ...project, titleBlock }, label);
+  };
+  const range = panel.querySelector<HTMLInputElement>('input[type="range"]');
+  range?.addEventListener("input", () => (range.nextElementSibling!.textContent = `${Math.round(Number(range.value) * 100)} %`));
+  panel.querySelectorAll<HTMLButtonElement>("[data-logo]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const v = b.dataset.logo!;
+      if (v === "arken") return putTb({ logo: "", logo_aspecto: "" }, "Logo ARKEN DISEÑO en el rótulo");
+      if (v === "ninguno") return putTb({ logo: "ninguno", logo_aspecto: "" }, "Quitar logo del rótulo");
+      logoInput.click();
+    }),
+  );
+  logoUpload = (dataUrl, aspect) => putTb({ logo: dataUrl, logo_aspecto: aspect.toFixed(4) }, "Logo propio en el rótulo");
   panel.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-field]").forEach((inp) =>
     inp.addEventListener("change", () => {
       const scope = inp.closest<HTMLElement>("[data-scope]")?.dataset.scope;
@@ -820,6 +852,36 @@ function renderTitlePanel(): void {
     }),
   );
 }
+
+// Logo propio para el rótulo: se reduce a 400 px de alto y se guarda dentro del modelo (data URL).
+let logoUpload: ((dataUrl: string, aspect: number) => void) | undefined;
+const logoInput = document.createElement("input");
+logoInput.type = "file";
+logoInput.accept = "image/png,image/jpeg,image/svg+xml,image/webp";
+logoInput.addEventListener("change", async () => {
+  const f = logoInput.files?.[0];
+  logoInput.value = "";
+  if (!f) return;
+  try {
+    const url = await new Promise<string>((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result));
+      r.onerror = () => rej(new Error("No se pudo leer la imagen."));
+      r.readAsDataURL(f);
+    });
+    const img = new Image();
+    await new Promise<void>((res, rej) => ((img.onload = () => res()), (img.onerror = () => rej(new Error("La imagen no es válida."))), (img.src = url)));
+    const h = Math.min(400, img.naturalHeight || 400);
+    const w = Math.max(1, Math.round(((img.naturalWidth || 400) / (img.naturalHeight || 400)) * h));
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    c.getContext("2d")!.drawImage(img, 0, 0, w, h);
+    logoUpload?.(c.toDataURL("image/png"), w / h);
+  } catch (err) {
+    say(err instanceof Error ? err.message : String(err));
+  }
+});
 
 function renderEntityPanel(e: Entity | undefined): void {
   if (!e) return void (panel.innerHTML = "");

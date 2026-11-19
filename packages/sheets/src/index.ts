@@ -34,6 +34,7 @@ import {
   waterTable,
   type Table,
 } from "@arken/calc";
+import { LOGO_ARKEN_DISENO, LOGO_ASPECT } from "./logo";
 import { RUN_STYLES, SYMBOLS, drawSymbol, type AABB2, type Paint, type PlanPrimitive } from "@arken/geometry";
 
 export interface SheetGeometry {
@@ -48,7 +49,10 @@ export interface SheetGeometry {
 
 const STYLE = "hoja";
 const FRAME_INK = "#1a1d21";
-const BRAND = "#0f3d3e";
+/** Colores de la familia ARKEN 360: azul noche, dorado y plata. */
+const BRAND = "#142339";
+const BRAND_GOLD = "#ba985b";
+const BRAND_SOFT = "#d9dde4";
 
 /** Pasa de mm de papel a metros del mundo. */
 export function sheetTransform(sheet: Sheet): { k: number; toWorld: (x: number, y: number) => Vec2; origin: Vec2 } {
@@ -60,11 +64,19 @@ export function sheetTransform(sheet: Sheet): { k: number; toWorld: (x: number, 
 
 /** Pinta en mm de papel y traduce al mundo. */
 class Pen {
-  readonly out: PlanPrimitive[] = [];
   constructor(
     readonly w: (x: number, y: number) => Vec2,
     readonly k: number,
+    readonly out: PlanPrimitive[] = [],
   ) {}
+  /** Pluma local: coordenadas en mm sin escalar desde (x0, y0), con todo (textos incluidos) multiplicado por `s`. */
+  scaled(x0: number, y0: number, s: number): Pen {
+    return new Pen((x, y) => this.w(x0 + x * s, y0 + y * s), this.k * s, this.out);
+  }
+  image(src: string, x: number, y: number, w: number, h: number): this {
+    this.out.push({ kind: "image", src, points: [this.w(x, y), this.w(x + w, y), this.w(x + w, y + h), this.w(x, y + h)], style: STYLE });
+    return this;
+  }
   line(pts: [number, number][], paint: Paint = { weight: 0.25 }): this {
     this.out.push({ kind: "polyline", points: pts.map(([x, y]) => this.w(x, y)), style: STYLE, ...paint });
     return this;
@@ -178,14 +190,30 @@ function drawTitleBlock(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y:
   p.text(F["archivo"] ?? "", x + w * 0.81, bottom + 2.5, 1.4, "center", false, "#5b6068");
 }
 
+/** Logo del rótulo: el del proyecto, el de ARKEN DISEÑO por defecto, o ninguno ("ninguno"). */
+export function titleLogo(F: Record<string, string>): string | undefined {
+  const v = (F["logo"] ?? "").trim();
+  if (v.toLowerCase() === "ninguno") return undefined;
+  return v.startsWith("data:image/") ? v : LOGO_ARKEN_DISENO;
+}
+
 function drawHeader(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y: number, w: number, h: number): void {
   const F = titleFields(reader, sheet);
   p.rect(x, y, w, h, { weight: 0.5 });
   p.rect(x, y, w, h, { fill: "solid", color: BRAND, weight: 0 });
-  p.text(F["empresa"] ?? "ARKEN 360", x + w / 2, y + h - 11, 8, "center", true, "#ffffff");
-  p.text(F["lema"] ?? "", x + w / 2, y + h - 18, 2.2, "center", false, "#d7e6e4");
+  const logo = titleLogo(F);
+  let cx = x + w / 2;
+  if (logo) {
+    const lh = h - 6;
+    const lw = lh * (F["logo_aspecto"] ? Number(F["logo_aspecto"]) || LOGO_ASPECT : logo === LOGO_ARKEN_DISENO ? LOGO_ASPECT : 1);
+    p.image(logo, x + 4, y + 3, lw, lh);
+    cx = x + 4 + lw + (w - 4 - lw) / 2;
+  }
+  p.text(F["empresa"] ?? "ARKEN 360", cx, y + h - 11, 8, "center", true, "#ffffff");
+  p.text(F["lema"] ?? "", cx, y + h - 18, 2.2, "center", false, BRAND_SOFT);
   const contact = [F["empresa_contacto"] ?? "", F["empresa_web"] ?? ""].filter(Boolean).join(" · ");
-  if (contact) p.text(contact, x + w / 2, y + 4, 1.7, "center", false, "#d7e6e4");
+  if (contact) p.text(contact, cx, y + 4, 1.7, "center", false, BRAND_SOFT);
+  p.line([[cx - 22, y + h - 14.4], [cx + 22, y + h - 14.4]], { weight: 0.35, color: BRAND_GOLD });
 }
 
 // ─── Tablas ──────────────────────────────────────────────────
@@ -589,15 +617,22 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   const fh = paper.h - 20;
   p.rect(0, 0, paper.w, paper.h, { fill: "white", weight: 0.1, color: "#9aa0a6" });
   p.rect(fx, fy, fw, fh, { weight: 0.7, color: FRAME_INK });
-  // Columna derecha del rótulo
-  const colW = 180;
+  // Columna derecha del rótulo. `rotulo_escala` agranda o reduce todo el rótulo (casillas, textos y logo).
+  const F = titleFields(reader, sheet);
+  const s = Math.min(1.6, Math.max(0.8, Number(F["rotulo_escala"]) || 1));
+  const colW0 = 180;
+  const colW = colW0 * s;
   const colX = fx + fw - colW;
+  const colX0 = fx + fw - colW0;
   p.line([[colX, fy], [colX, fy + fh]], { weight: 0.5 });
   const headerH = 30;
-  drawHeader(p, reader, sheet, colX, fy + fh - headerH, colW, headerH);
-  drawTitleBlock(p, reader, sheet, colX, fy, colW, 96);
-  // Título de la vista
-  const vp = sheet.viewport;
+  const tbH = 96;
+  drawHeader(p.scaled(colX, fy + fh - headerH * s, s), reader, sheet, 0, 0, colW0, headerH);
+  drawTitleBlock(p.scaled(colX, fy, s), reader, sheet, 0, 0, colW0, tbH);
+  // Ventana de dibujo: se recorta si el rótulo crece.
+  const vp0 = sheet.viewport;
+  const vpRight = Math.min(vp0.x + vp0.w, colX - 5);
+  const vp = { ...vp0, w: vpRight - vp0.x };
   const isPlan = sheet.disciplines.length > 0;
   const scaleText = sheet.fields["escala"] ?? (isPlan ? `1:${sheet.scale}` : "INDICADA");
   p.text(`${sheet.title.toUpperCase()}`, vp.x + 2, vp.y + 4, 3.2, "left", true);
@@ -610,8 +645,19 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
     p.out.push({ kind: "polygon", points: [toWorld(nx, ny + 7), toWorld(nx + 2.6, ny - 4), toWorld(nx, ny - 2), toWorld(nx - 2.6, ny - 4)], style: STYLE, fill: "solid", color: FRAME_INK });
     p.text("N", nx, ny + 10.5, 3.2, "center", true);
   }
-  // Bloques
-  for (const b of sheet.blocks) {
+  // Bloques: los de la columna se reacomodan entre el rótulo y el encabezado; los del área de
+  // dibujo se comprimen a lo ancho si el rótulo creció.
+  const y0 = fy + tbH, y1 = fy + fh - headerH;
+  const ny0 = fy + tbH * s, ny1 = fy + fh - headerH * s;
+  const fv = (ny1 - ny0) / (y1 - y0);
+  const fhx = (vp.x + vp.w - vp0.x) / vp0.w;
+  for (const b0 of sheet.blocks) {
+    const b =
+      s === 1
+        ? b0
+        : b0.x >= colX0 - 1
+          ? { ...b0, x: colX + (b0.x - colX0) * s, w: b0.w * s, y: ny0 + (b0.y - y0) * fv, h: b0.h * fv }
+          : { ...b0, x: vp0.x + (b0.x - vp0.x) * fhx, w: b0.w * fhx };
     if (b.type === "convenciones") drawLegend(p, reader, sheet, b);
     else if (b.type === "notas") drawNotes(p, b);
     else if (b.type === "unifilar") drawSingleLine(p, reader, b);
@@ -625,3 +671,4 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   };
   return { primitives: p.out, paper: box(0, 0, paper.w, paper.h), viewport: box(vp.x, vp.y, vp.w, vp.h), k };
 }
+export { LOGO_ARKEN_DISENO, LOGO_ASPECT } from "./logo";
