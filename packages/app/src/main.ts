@@ -806,6 +806,8 @@ function renderTitlePanel(): void {
   let html = `<h2>Rótulo del proyecto</h2><p class="muted">Vale para todos los planos. Cada plano puede cambiar un campo abajo.</p><div class="fields" data-scope="project">`;
   const esc0 = Number(tb["rotulo_escala"]) || 1;
   html += `<label class="f"><span>Tamaño del rótulo</span><span class="range"><input data-field="rotulo_escala" type="range" min="0.8" max="1.6" step="0.05" value="${esc0}"><b>${Math.round(esc0 * 100)} %</b></span></label>`;
+  const tx0 = Number(tb["rotulo_texto"]) || 1;
+  html += `<label class="f"><span>Tamaño del texto</span><span class="range"><input data-field="rotulo_texto" type="range" min="0.7" max="1.4" step="0.05" value="${tx0}"><b>${Math.round(tx0 * 100)} %</b></span></label>`;
   const logo = (tb["logo"] ?? "").trim();
   const logoName = logo.toLowerCase() === "ninguno" ? "Sin logo" : logo.startsWith("data:image/") ? "Logo propio" : "ARKEN DISEÑO";
   html += `<div class="f"><span>Logo (${logoName})</span><span class="logo-btns"><button type="button" data-logo="subir">Subir…</button><button type="button" data-logo="arken">ARKEN</button><button type="button" data-logo="ninguno">Quitar</button></span></div>`;
@@ -826,8 +828,9 @@ function renderTitlePanel(): void {
     for (const [k, v] of Object.entries(patch)) if (!v) delete titleBlock[k];
     put({ ...project, titleBlock }, label);
   };
-  const range = panel.querySelector<HTMLInputElement>('input[type="range"]');
-  range?.addEventListener("input", () => (range.nextElementSibling!.textContent = `${Math.round(Number(range.value) * 100)} %`));
+  panel.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((range) =>
+    range.addEventListener("input", () => (range.nextElementSibling!.textContent = `${Math.round(Number(range.value) * 100)} %`)),
+  );
   panel.querySelectorAll<HTMLButtonElement>("[data-logo]").forEach((b) =>
     b.addEventListener("click", () => {
       const v = b.dataset.logo!;

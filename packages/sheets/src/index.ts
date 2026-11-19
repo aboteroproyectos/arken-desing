@@ -68,10 +68,16 @@ class Pen {
     readonly w: (x: number, y: number) => Vec2,
     readonly k: number,
     readonly out: PlanPrimitive[] = [],
+    /** Factor propio del tamaño de los textos (rótulo: `rotulo_texto`). */
+    readonly ts = 1,
   ) {}
   /** Pluma local: coordenadas en mm sin escalar desde (x0, y0), con todo (textos incluidos) multiplicado por `s`. */
   scaled(x0: number, y0: number, s: number): Pen {
-    return new Pen((x, y) => this.w(x0 + x * s, y0 + y * s), this.k * s, this.out);
+    return new Pen((x, y) => this.w(x0 + x * s, y0 + y * s), this.k * s, this.out, this.ts);
+  }
+  /** La misma pluma con los textos multiplicados por `f` (las casillas no cambian). */
+  withText(f: number): Pen {
+    return new Pen(this.w, this.k, this.out, f);
   }
   image(src: string, x: number, y: number, w: number, h: number): this {
     this.out.push({ kind: "image", src, points: [this.w(x, y), this.w(x + w, y), this.w(x + w, y + h), this.w(x, y + h)], style: STYLE });
@@ -86,7 +92,7 @@ class Pen {
     return this;
   }
   text(t: string, x: number, y: number, size = 2, align: "left" | "center" | "right" = "left", bold = false, color?: string, rotation = 0): this {
-    this.out.push({ kind: "text", at: this.w(x, y), text: t, height: size * this.k, align, bold, rotation, style: STYLE, ...(color ? { color } : {}) });
+    this.out.push({ kind: "text", at: this.w(x, y), text: t, height: size * this.k * this.ts, align, bold, rotation, style: STYLE, ...(color ? { color } : {}) });
     return this;
   }
   circle(cx: number, cy: number, r: number, paint: Paint = { weight: 0.25 }): this {
@@ -148,9 +154,15 @@ function drawTitleBlock(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y:
   for (const [label, value, rh] of rows) {
     cy -= rh;
     p.line([[x, cy], [x + w, cy]], { weight: 0.18 });
-    p.text(label, x + 1.5, cy + rh - 2.4, 1.6, "left", false, "#5b6068");
-    const lines = wrap(value, Math.floor((w - 3) / 1.45));
-    lines.slice(0, 2).forEach((l, i) => p.text(l, x + 1.5, cy + rh - 5.6 - i * 3.1, label === "CONTENIDO" || label === "PROYECTO" ? 2.4 : 2, "left", label === "CONTENIDO" || label === "PROYECTO"));
+    p.text(label, x + 1.5, cy + rh - 2.4 + (p.ts - 1) * 0.6, 1.6, "left", false, "#5b6068");
+    const big = label === "CONTENIDO" || label === "PROYECTO";
+    const lines = wrap(value, Math.floor((w - 3) / (1.45 * p.ts)));
+    const gap = 3.1 * Math.max(1, p.ts * 0.95);
+    const room = Math.max(1, Math.floor((rh - 5.6 + 1.2) / gap) + 1);
+    const size = big ? 2.4 : 2;
+    // Primera línea: debajo del título de la casilla, sin salirse por abajo aunque el texto crezca.
+    const y0 = Math.max(rh - 5.6 - (p.ts - 1) * 1.2, (size * p.ts) / 2 + 0.9);
+    lines.slice(0, Math.min(2, room)).forEach((l, i) => p.text(l, x + 1.5, cy + y0 - i * gap, size, "left", big));
   }
   // Fila de responsables
   const resp: [string, string][] = [
@@ -209,8 +221,9 @@ function drawHeader(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y: num
     p.image(logo, x + 4, y + 3, lw, lh);
     cx = x + 4 + lw + (w - 4 - lw) / 2;
   }
-  p.text(F["empresa"] ?? "ARKEN 360", cx, y + h - 11, 8, "center", true, "#ffffff");
-  p.text(F["lema"] ?? "", cx, y + h - 19, 2.2, "center", false, BRAND_SOFT);
+  // El nombre de la empresa ya es grande: solo se reduce con el tamaño de texto, no crece.
+  p.text(F["empresa"] ?? "ARKEN 360", cx, y + h - 11, (8 * Math.min(p.ts, 1)) / p.ts, "center", true, "#ffffff");
+  p.text(F["lema"] ?? "", cx, y + h - 19 - (p.ts - 1) * 1.2, 2.2, "center", false, BRAND_SOFT);
   const contact = [F["empresa_contacto"] ?? "", F["empresa_web"] ?? ""].filter(Boolean).join(" · ");
   if (contact) p.text(contact, cx, y + 4, 1.7, "center", false, BRAND_SOFT);
   p.line([[cx - 22, y + h - 16], [cx + 22, y + h - 16]], { weight: 0.35, color: BRAND_GOLD });
@@ -627,8 +640,10 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   p.line([[colX, fy], [colX, fy + fh]], { weight: 0.5 });
   const headerH = 30;
   const tbH = 96;
-  drawHeader(p.scaled(colX, fy + fh - headerH * s, s), reader, sheet, 0, 0, colW0, headerH);
-  drawTitleBlock(p.scaled(colX, fy, s), reader, sheet, 0, 0, colW0, tbH);
+  // `rotulo_texto` cambia solo el tamaño de las letras del rótulo (70 % a 140 %).
+  const ts = Math.min(1.4, Math.max(0.7, Number(F["rotulo_texto"]) || 1));
+  drawHeader(p.scaled(colX, fy + fh - headerH * s, s).withText(ts), reader, sheet, 0, 0, colW0, headerH);
+  drawTitleBlock(p.scaled(colX, fy, s).withText(ts), reader, sheet, 0, 0, colW0, tbH);
   // Ventana de dibujo: se recorta si el rótulo crece.
   const vp0 = sheet.viewport;
   const vpRight = Math.min(vp0.x + vp0.w, colX - 5);
