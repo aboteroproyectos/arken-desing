@@ -43,6 +43,8 @@ import {
 import { PlanGeometryEngine, RUN_STYLES, SYMBOLS, buildWallFrame, toLocal } from "@arken/geometry";
 import { FINISHES, SPEC_FIELDS, buildLote01, checkSpec, defaultSpec, finishProps, generateHouse, type FinishLevel, type HouseSpec, type RoomType } from "@arken/projects";
 import { showDesignAssistant } from "./assistant";
+import { getProject, listProjects, putProject, summarize, type LibRecord } from "./library";
+import { makeRecord, showLibrary } from "./libraryui";
 import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, titleLogo, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
 import { calcReportHtml, type ReportChapter } from "@arken/calc";
@@ -1199,21 +1201,126 @@ fileInput.addEventListener("change", async () => {
   try {
     const model = JSON.parse(await f.text()) as BimModel;
     if (model.schemaVersion !== 1 || typeof model.entities !== "object" || typeof model.relations !== "object") throw new Error("No es un modelo ARKEN válido.");
-    loadModel(model, `Abierto: ${f.name}`);
+    loadModel(model, `Abierto: ${f.name}. Quedó guardado en la biblioteca.`, { origen: "Importado de archivo" });
   } catch (err) {
     say(err instanceof Error ? err.message : String(err));
   }
   fileInput.value = "";
 });
-$<HTMLButtonElement>("#lote01").addEventListener("click", async () => {
-  if (store.canUndo && !(await confirmReplace())) return;
-  loadModel(buildLote01(), "Proyecto Casa Lote 01 · Bosque de Agua cargado.");
+// ─── Biblioteca de proyectos ────────────────────────────────
+const LIB_CURRENT_KEY = "arken-diseno:biblioteca-actual";
+const LIB_SEED_KEY = "arken-diseno:biblioteca-semilla";
+let libCurrent: string | undefined;
+try {
+  libCurrent = localStorage.getItem(LIB_CURRENT_KEY) ?? undefined;
+} catch {
+  /* sin almacenamiento */
+}
+if (!init.restored) libCurrent = undefined;
+function setLibCurrent(id: string | undefined): void {
+  libCurrent = id;
+  try {
+    if (id) localStorage.setItem(LIB_CURRENT_KEY, id);
+    else localStorage.removeItem(LIB_CURRENT_KEY);
+  } catch {
+    /* sin almacenamiento */
+  }
+}
+/** Miniatura de la planta arquitectónica del primer piso, dibujada con el mismo motor de los planos. */
+function thumbnail(model: BimModel): string {
+  try {
+    const st = new BimStore(model);
+    const eng = new PlanGeometryEngine({ cutHeight: 1.2, scale: 100, textScale: 1 });
+    eng.rebuildAll(st);
+    const lv = [...st.entities()].filter((e): e is Level => e.kind === "Level" && !/cubierta/i.test(e.name ?? "")).sort((a, b) => a.elevation - b.elevation)[0];
+    if (!lv) return "";
+    const m: ViewMode = { kind: "model", levelId: lv.id, disciplines: new Set<Discipline>(["ARQ"]) };
+    const items = visibleGeoms(st, eng.all(), m).filter((v) => v.geom.kind !== "Annotation");
+    let box: { minX: number; minY: number; maxX: number; maxY: number } | undefined;
+    for (const v of items) {
+      const b = v.geom.box;
+      box = box ? { minX: Math.min(box.minX, b.minX), minY: Math.min(box.minY, b.minY), maxX: Math.max(box.maxX, b.maxX), maxY: Math.max(box.maxY, b.maxY) } : { ...b };
+    }
+    if (!box) return "";
+    const W = 640;
+    const H = 440;
+    const dpr = window.devicePixelRatio || 1;
+    const c = document.createElement("canvas");
+    c.width = Math.round(W * dpr);
+    c.height = Math.round(H * dpr);
+    const vp = new Viewport();
+    vp.width = W;
+    vp.height = H;
+    const pad = 28;
+    vp.scale = Math.min((W - 2 * pad) / Math.max(box.maxX - box.minX, 1), (H - 2 * pad) / Math.max(box.maxY - box.minY, 1));
+    vp.center = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
+    new PlanRenderer(c, vp).draw(st, items, 100, { selected: new Set(), hovered: undefined, snap: undefined, selectionRect: undefined, sketch: undefined }, undefined, false);
+    return c.toDataURL("image/jpeg", 0.86);
+  } catch {
+    return "";
+  }
+}
+/** Guarda el proyecto abierto en la biblioteca: actualiza su ficha o crea una nueva. */
+async function saveToLibrary(origen = "Guardado desde el editor", quiet = false): Promise<void> {
+  const model = store.snapshot();
+  const old = libCurrent ? await getProject(libCurrent) : undefined;
+  if (old) {
+    old.modelo = model;
+    old.resumen = summarize(model);
+    old.miniatura = thumbnail(model) || old.miniatura;
+    old.actualizado = Date.now();
+    await putProject(old);
+  } else {
+    const r = makeRecord(model, origen, thumbnail(model));
+    await putProject(r);
+    setLibCurrent(r.id);
+  }
+  if (!quiet) say(`Guardado en la biblioteca: ${projectLabel()}.`, true);
+}
+let libTimer: number | undefined;
+store.subscribe(() => {
+  if (!libCurrent) return;
+  window.clearTimeout(libTimer);
+  libTimer = window.setTimeout(() => void saveToLibrary("", true), 2500);
+});
+/** La Casa Lote 01 entra una vez a la biblioteca como proyecto de referencia (ya no tiene botón propio). */
+async function seedLibrary(): Promise<void> {
+  try {
+    if (localStorage.getItem(LIB_SEED_KEY)) return;
+    localStorage.setItem(LIB_SEED_KEY, "1");
+  } catch {
+    return;
+  }
+  if ((await listProjects()).some((r) => r.origen === "Proyecto de referencia")) return;
+  const m = buildLote01();
+  await putProject(makeRecord(m, "Proyecto de referencia", thumbnail(m), "Casa Lote 01 · Bosque de Agua"));
+}
+void seedLibrary();
+$<HTMLButtonElement>("#library").addEventListener("click", async () => {
+  await seedLibrary();
+  showLibrary({
+    currentId: () => libCurrent,
+    saveCurrent: () => saveToLibrary(),
+    open: async (r: LibRecord) => {
+      if (store.canUndo && !(await confirmReplace())) return false;
+      loadModel(r.modelo, `Abierto de la biblioteca: ${r.nombre}.`, { id: r.id });
+      return true;
+    },
+    thumbnail,
+    download: (r) =>
+      void download(`${safeName(`ARKEN DISENO-MODELO BIM-${today()}-${r.nombre.toUpperCase()}`)}.arken.json`, JSON.stringify(r.modelo, null, 2), "application/json").then(
+        () => say(`Descargado: ${r.nombre}.`, true),
+        (err: unknown) => say(err instanceof Error ? err.message : String(err)),
+      ),
+    importFile: () => fileInput.click(),
+    say,
+  });
 });
 $<HTMLButtonElement>("#new").addEventListener("click", () =>
   showDesignAssistant({
     load: async (model, msg) => {
       if (store.canUndo && !(await confirmReplace())) return false;
-      loadModel(model, msg);
+      loadModel(model, msg, { origen: "Diseñado con el asistente" });
       return true;
     },
     openLote01Variant: showSpecForm,
@@ -1269,7 +1376,7 @@ function showSpecForm(): void {
     }
     if (store.canUndo && !(await confirmReplace())) return;
     try {
-      loadModel(generateHouse(s), `Proyecto generado: ${s.proyecto} · ${(s.ancho * s.largo).toFixed(1)} m², 11 planos con todas las redes.`);
+      loadModel(generateHouse(s), `Proyecto generado: ${s.proyecto} · ${(s.ancho * s.largo).toFixed(1)} m², 11 planos con todas las redes.`, { origen: "Generado por especificaciones" });
       box.remove();
     } catch (err) {
       msg.textContent = err instanceof Error ? err.message : String(err);
@@ -1304,9 +1411,14 @@ function confirmReplace(): Promise<boolean> {
     box.querySelector<HTMLButtonElement>("[data-ok='1']")!.focus();
   });
 }
-function loadModel(model: BimModel, msg: string): void {
+/** `lib`: ficha de la biblioteca a la que pertenece (id) o, si es un proyecto nuevo, de dónde viene (se guarda solo). */
+function loadModel(model: BimModel, msg: string, lib?: { id: string } | { origen: string }): void {
   tool.cancel();
+  window.clearTimeout(libTimer);
+  setLibCurrent(undefined);
   store.load(model);
+  if (lib && "id" in lib) setLibCurrent(lib.id);
+  else if (lib) void saveToLibrary(lib.origen, true);
   mode = defaultMode();
   setMode(mode);
   say(msg, true);

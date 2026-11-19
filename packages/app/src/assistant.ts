@@ -2,6 +2,7 @@
 // preguntas que faltan y diseña la casa completa con sus planos. Todo corre en el navegador con
 // reglas de diseño: no usa ninguna conexión a inteligencia artificial.
 
+import { summarize } from "./library";
 import type { BimModel } from "@arken/core";
 import {
   QUESTIONS,
@@ -122,7 +123,7 @@ export function showDesignAssistant(host: AssistantHost): void {
         const r = designHouse(draft);
         const rv = reviewDesign(r);
         const p = r.program;
-        const area = r.layout.W * r.layout.L * p.pisos;
+        const area = summarize(r.model).area;
         if (!(await host.load(r.model, `Casa diseñada: ${STYLES[p.estilo].name}, ${p.pisos} ${p.pisos === 1 ? "piso" : "pisos"}, ${area.toFixed(0)} m². ${rv.summary}`))) return;
         box.remove();
         showReview(rv, `${p.proyecto} · ${STYLES[p.estilo].name} · ${area.toFixed(0)} m²`);
