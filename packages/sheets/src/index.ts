@@ -138,68 +138,100 @@ export function allSheets(reader: ModelReader): Sheet[] {
 
 // ─── Rótulo ARKEN 360 ────────────────────────────────────────
 
-function drawTitleBlock(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y: number, w: number, h: number): void {
+interface Cell {
+  readonly label: string;
+  readonly value: string;
+  readonly size: number;
+  readonly bold?: boolean;
+}
+
+/** Disposición de una casilla del rótulo: título arriba y el valor en hasta 2 líneas (3 si el texto es grande). */
+function cellLayout(c0: Cell, w: number, ts: number): { cell: Cell; lines: string[]; labelY: number; firstY: number; gap: number; need: number } {
+  const cw = c0.bold ? 0.72 : 0.64; // ancho de un carácter / altura
+  // Una palabra más larga que la casilla no se puede partir: se reduce la letra de esa casilla.
+  const longest = Math.max(1, ...c0.value.split(/\s+/).map((t) => t.length));
+  const c = { ...c0, size: Math.min(c0.size, (w - 3) / (longest * cw * ts)) };
+  const maxChars = Math.max(1, Math.floor((w - 3) / (c.size * ts * cw)));
+  let lines = wrap(c.value, maxChars);
+  const maxLines = ts > 1.4 ? 3 : 2;
+  if (lines.length > maxLines) lines = [...lines.slice(0, maxLines - 1), lines.slice(maxLines - 1).join(" ").slice(0, Math.max(1, maxChars - 1)) + "…"];
+  const labelY = 1.6 + 0.8 * ts;
+  const firstY = labelY + ts * (0.8 + c.size / 2) + 0.8 + 0.6 * Math.min(ts, 1);
+  const gap = c.size * ts * 1.3;
+  const last = firstY + Math.max(0, lines.length - 1) * gap;
+  return { cell: c, lines, labelY, firstY, gap, need: last + (c.size * ts) / 2 + 1.2 };
+}
+
+function drawCell(p: Pen, c: Cell, x: number, top: number, w: number): void {
+  const L = cellLayout(c, w, p.ts);
+  p.text(c.label, x + 1.5, top - L.labelY, 1.6, "left", false, "#5b6068");
+  L.lines.forEach((l, i) => p.text(l, x + 1.5, top - L.firstY - i * L.gap, L.cell.size, "left", !!c.bold));
+}
+
+/**
+ * Rótulo ARKEN 360. Las casillas tienen su alto de diseño y crecen solo si el tamaño de texto lo pide.
+ * Devuelve la altura del rótulo y la función que lo dibuja con su esquina inferior izquierda en (x, y).
+ */
+function titleBlockLayout(reader: ModelReader, sheet: Sheet, w: number, ts: number): { h: number; draw: (p: Pen, x: number, y: number) => void } {
   const F = titleFields(reader, sheet);
   const sheets = allSheets(reader);
   const idx = sheets.findIndex((s) => s.id === sheet.id) + 1;
-  p.rect(x, y, w, h, { weight: 0.5 });
-  const rows: [string, string, number][] = [
-    ["PROYECTO", F["proyecto"] ?? "", 11],
-    ["LOCALIZACIÓN", F["localizacion"] ?? "", 9],
-    ["PROPIETARIO", F["propietario"] ?? "", 7],
-    ["CONTENIDO", sheet.title, 11],
-    ["DISEÑO", `${F["diseno"] ?? ""}${F["matricula"] ? " · " + F["matricula"] : ""}`, 9],
+  const rows: [Cell, number][] = [
+    [{ label: "PROYECTO", value: F["proyecto"] ?? "", size: 2.4, bold: true }, 11],
+    [{ label: "LOCALIZACIÓN", value: F["localizacion"] ?? "", size: 2 }, 9],
+    [{ label: "PROPIETARIO", value: F["propietario"] ?? "", size: 2 }, 7],
+    [{ label: "CONTENIDO", value: sheet.title, size: 2.4, bold: true }, 11],
+    [{ label: "DISEÑO", value: `${F["diseno"] ?? ""}${F["matricula"] ? " · " + F["matricula"] : ""}`, size: 2 }, 9],
   ];
-  let cy = y + h;
-  for (const [label, value, rh] of rows) {
-    cy -= rh;
-    p.line([[x, cy], [x + w, cy]], { weight: 0.18 });
-    p.text(label, x + 1.5, cy + rh - 2.4 + (p.ts - 1) * 0.6, 1.6, "left", false, "#5b6068");
-    const big = label === "CONTENIDO" || label === "PROYECTO";
-    const lines = wrap(value, Math.floor((w - 3) / (1.45 * p.ts)));
-    const gap = 3.1 * Math.max(1, p.ts * 0.95);
-    const room = Math.max(1, Math.floor((rh - 5.6 + 1.2) / gap) + 1);
-    const size = big ? 2.4 : 2;
-    // Primera línea: debajo del título de la casilla, sin salirse por abajo aunque el texto crezca.
-    const y0 = Math.max(rh - 5.6 - (p.ts - 1) * 1.2, (size * p.ts) / 2 + 0.9);
-    lines.slice(0, Math.min(2, room)).forEach((l, i) => p.text(l, x + 1.5, cy + y0 - i * gap, size, "left", big));
-  }
-  // Fila de responsables
-  const resp: [string, string][] = [
-    ["DIBUJÓ", F["dibujo"] ?? ""],
-    ["REVISÓ", F["reviso"] ?? ""],
-    ["APROBÓ", F["aprobo"] ?? ""],
+  const rowH = rows.map(([c, h0]) => Math.max(h0, cellLayout(c, w, ts).need));
+  const trio = (cells: Cell[]) => Math.max(8, ...cells.map((c) => cellLayout(c, w / 3, ts).need));
+  const resp: Cell[] = [
+    { label: "DIBUJÓ", value: F["dibujo"] ?? "", size: 1.9 },
+    { label: "REVISÓ", value: F["reviso"] ?? "", size: 1.9 },
+    { label: "APROBÓ", value: F["aprobo"] ?? "", size: 1.9 },
   ];
-  cy -= 8;
-  p.line([[x, cy], [x + w, cy]], { weight: 0.18 });
-  resp.forEach(([l, v], i) => {
-    const cx = x + (w / 3) * i;
-    if (i > 0) p.line([[cx, cy], [cx, cy + 8]], { weight: 0.18 });
-    p.text(l, cx + 1.5, cy + 5.6, 1.5, "left", false, "#5b6068");
-    p.text(v, cx + 1.5, cy + 2.2, 1.9);
-  });
-  // Escala, fecha, revisión
-  const meta: [string, string][] = [
-    ["ESCALA", F["escala"] ?? `1:${sheet.scale}`],
-    ["FECHA", F["fecha"] ?? ""],
-    ["REVISIÓN", F["revision"] ?? "0"],
+  const meta: Cell[] = [
+    { label: "ESCALA", value: F["escala"] ?? `1:${sheet.scale}`, size: 2, bold: true },
+    { label: "FECHA", value: F["fecha"] ?? "", size: 2, bold: true },
+    { label: "REVISIÓN", value: F["revision"] ?? "0", size: 2, bold: true },
   ];
-  cy -= 8;
-  p.line([[x, cy], [x + w, cy]], { weight: 0.18 });
-  meta.forEach(([l, v], i) => {
-    const cx = x + (w / 3) * i;
-    if (i > 0) p.line([[cx, cy], [cx, cy + 8]], { weight: 0.18 });
-    p.text(l, cx + 1.5, cy + 5.6, 1.5, "left", false, "#5b6068");
-    p.text(v, cx + 1.5, cy + 2.2, 2, "left", true);
-  });
-  // Número de plano
-  const bottom = y;
-  p.line([[x + w * 0.62, bottom], [x + w * 0.62, cy]], { weight: 0.18 });
-  p.text("PLANO N.º", x + 1.5, cy - 3, 1.6, "left", false, "#5b6068");
-  p.text(sheet.number, x + w * 0.31, bottom + (cy - bottom) / 2 - 4, 9, "center", true, BRAND);
-  p.text("HOJA", x + w * 0.62 + 1.5, cy - 3, 1.6, "left", false, "#5b6068");
-  p.text(F["hoja"] || `${idx} DE ${sheets.length}`, x + w * 0.81, bottom + (cy - bottom) / 2 - 2, 3.2, "center", true);
-  p.text(F["archivo"] ?? "", x + w * 0.81, bottom + 2.5, 1.4, "center", false, "#5b6068");
+  const respH = trio(resp);
+  const metaH = trio(meta);
+  const upper = rowH.reduce((t, h) => t + h, 0) + respH + metaH;
+  // Casilla del número: alto de diseño (96 − el resto) o lo que pida el número a ese tamaño de letra.
+  const numH = Math.max(96 - (11 + 9 + 7 + 11 + 9 + 8 + 8), 9 * ts * 1.15 + 1.6 * ts + 6);
+  const h = upper + numH;
+  const draw = (p: Pen, x: number, y: number) => {
+    p.rect(x, y, w, h, { weight: 0.5 });
+    let top = y + h;
+    rows.forEach(([c], i) => {
+      drawCell(p, c, x, top, w);
+      top -= rowH[i]!;
+      p.line([[x, top], [x + w, top]], { weight: 0.18 });
+    });
+    for (const [cells, ch] of [[resp, respH], [meta, metaH]] as [Cell[], number][]) {
+      cells.forEach((c, i) => {
+        const cx = x + (w / 3) * i;
+        if (i > 0) p.line([[cx, top], [cx, top - ch]], { weight: 0.18 });
+        drawCell(p, c, cx, top, w / 3);
+      });
+      top -= ch;
+      p.line([[x, top], [x + w, top]], { weight: 0.18 });
+    }
+    // Número de plano y hoja
+    const bottom = y;
+    const labelY = 1.6 + 0.8 * p.ts;
+    p.line([[x + w * 0.62, bottom], [x + w * 0.62, top]], { weight: 0.18 });
+    p.text("PLANO N.º", x + 1.5, top - labelY, 1.6, "left", false, "#5b6068");
+    const midY = bottom + (top - labelY - 0.8 * p.ts - bottom) / 2;
+    const fit = (t: string, size: number, room: number) => Math.min(size, room / (Math.max(1, t.length) * 0.68 * p.ts));
+    p.text(sheet.number, x + w * 0.31, midY, fit(sheet.number, 9, w * 0.62 - 4), "center", true, BRAND);
+    p.text("HOJA", x + w * 0.62 + 1.5, top - labelY, 1.6, "left", false, "#5b6068");
+    const hoja = F["hoja"] || `${idx} DE ${sheets.length}`;
+    p.text(hoja, x + w * 0.81, midY, fit(hoja, 3.2, w * 0.38 - 3), "center", true);
+    p.text(F["archivo"] ?? "", x + w * 0.81, bottom + 1.2 + 0.7 * p.ts, 1.4, "center", false, "#5b6068");
+  };
+  return { h, draw };
 }
 
 /** Logo del rótulo: el del proyecto, el de ARKEN DISEÑO por defecto, o ninguno ("ninguno"). */
@@ -209,24 +241,39 @@ export function titleLogo(F: Record<string, string>): string | undefined {
   return v.startsWith("data:image/") ? v : LOGO_ARKEN_DISENO;
 }
 
-function drawHeader(p: Pen, reader: ModelReader, sheet: Sheet, x: number, y: number, w: number, h: number): void {
+/** Encabezado azul con el logo y la empresa; crece hacia abajo si el lema o el contacto crecen. */
+function headerLayout(reader: ModelReader, sheet: Sheet, w: number, ts: number): { h: number; draw: (p: Pen, x: number, y: number) => void } {
   const F = titleFields(reader, sheet);
-  p.rect(x, y, w, h, { weight: 0.5 });
-  p.rect(x, y, w, h, { fill: "solid", color: BRAND, weight: 0 });
   const logo = titleLogo(F);
-  let cx = x + w / 2;
-  if (logo) {
-    const lh = h - 6;
-    const lw = lh * (F["logo_aspecto"] ? Number(F["logo_aspecto"]) || LOGO_ASPECT : logo === LOGO_ARKEN_DISENO ? LOGO_ASPECT : 1);
-    p.image(logo, x + 4, y + 3, lw, lh);
-    cx = x + 4 + lw + (w - 4 - lw) / 2;
-  }
-  // El nombre de la empresa ya es grande: solo se reduce con el tamaño de texto, no crece.
-  p.text(F["empresa"] ?? "ARKEN 360", cx, y + h - 11, (8 * Math.min(p.ts, 1)) / p.ts, "center", true, "#ffffff");
-  p.text(F["lema"] ?? "", cx, y + h - 19 - (p.ts - 1) * 1.2, 2.2, "center", false, BRAND_SOFT);
+  const lw = logo ? 24 * (F["logo_aspecto"] ? Number(F["logo_aspecto"]) || LOGO_ASPECT : logo === LOGO_ARKEN_DISENO ? LOGO_ASPECT : 1) : 0;
+  const textW = logo ? w - 8 - lw : w - 6;
   const contact = [F["empresa_contacto"] ?? "", F["empresa_web"] ?? ""].filter(Boolean).join(" · ");
-  if (contact) p.text(contact, cx, y + 4, 1.7, "center", false, BRAND_SOFT);
-  p.line([[cx - 22, y + h - 16], [cx + 22, y + h - 16]], { weight: 0.35, color: BRAND_GOLD });
+  const lemaLines = wrap(F["lema"] ?? "", Math.max(6, Math.floor(textW / (2.2 * ts * 0.55))));
+  const contLines = contact ? wrap(contact, Math.max(6, Math.floor(textW / (1.7 * ts * 0.55)))) : [];
+  const lemaGap = 2.2 * ts * 1.3;
+  const contGap = 1.7 * ts * 1.3;
+  // Distancias desde el borde superior (con ts = 1 coinciden con el diseño original de 30 mm).
+  const lemaY = 16 + 1.9 + 1.1 * ts;
+  const lemaEnd = lemaY + Math.max(0, lemaLines.length - 1) * lemaGap;
+  const contY = lemaEnd + 1.1 * ts + 0.85 * ts + 5.05;
+  const contEnd = contY + Math.max(0, contLines.length - 1) * contGap;
+  const h = Math.max(30, contLines.length ? contEnd + 0.85 * ts + 3.15 : lemaEnd + 1.1 * ts + 3);
+  const draw = (p: Pen, x: number, y: number) => {
+    const top = y + h;
+    p.rect(x, y, w, h, { weight: 0.5 });
+    p.rect(x, y, w, h, { fill: "solid", color: BRAND, weight: 0 });
+    let cx = x + w / 2;
+    if (logo) {
+      p.image(logo, x + 4, top - 27, lw, 24);
+      cx = x + 4 + lw + (w - 4 - lw) / 2;
+    }
+    // El nombre de la empresa ya es grande: se reduce con el tamaño de texto, pero no crece.
+    p.text(F["empresa"] ?? "ARKEN 360", cx, top - 11, (8 * Math.min(p.ts, 1)) / p.ts, "center", true, "#ffffff");
+    p.line([[cx - 22, top - 16], [cx + 22, top - 16]], { weight: 0.35, color: BRAND_GOLD });
+    lemaLines.forEach((l, i) => p.text(l, cx, top - lemaY - i * lemaGap, 2.2, "center", false, BRAND_SOFT));
+    contLines.forEach((l, i) => p.text(l, cx, top - contY - i * contGap, 1.7, "center", false, BRAND_SOFT));
+  };
+  return { h, draw };
 }
 
 // ─── Tablas ──────────────────────────────────────────────────
@@ -638,12 +685,22 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   const colX = fx + fw - colW;
   const colX0 = fx + fw - colW0;
   p.line([[colX, fy], [colX, fy + fh]], { weight: 0.5 });
-  const headerH = 30;
-  const tbH = 96;
-  // `rotulo_texto` cambia solo el tamaño de las letras del rótulo (70 % a 140 %).
-  const ts = Math.min(1.4, Math.max(0.7, Number(F["rotulo_texto"]) || 1));
-  drawHeader(p.scaled(colX, fy + fh - headerH * s, s).withText(ts), reader, sheet, 0, 0, colW0, headerH);
-  drawTitleBlock(p.scaled(colX, fy, s).withText(ts), reader, sheet, 0, 0, colW0, tbH);
+  // `rotulo_texto` cambia solo el tamaño de las letras del rótulo (70 % a 500 %); las casillas crecen
+  // con el texto. Si el rótulo ya no cabe en la columna, se reduce hasta que quepa.
+  let ts = Math.min(5, Math.max(0.7, Number(F["rotulo_texto"]) || 1));
+  let hd = headerLayout(reader, sheet, colW0, ts);
+  let tb = titleBlockLayout(reader, sheet, colW0, ts);
+  while ((hd.h + tb.h) * s > fh - 30 && ts > 0.75) {
+    ts -= 0.05;
+    hd = headerLayout(reader, sheet, colW0, ts);
+    tb = titleBlockLayout(reader, sheet, colW0, ts);
+  }
+  const headerH0 = 30;
+  const tbH0 = 96;
+  const headerH = hd.h;
+  const tbH = tb.h;
+  hd.draw(p.scaled(colX, fy + fh - headerH * s, s).withText(ts), 0, 0);
+  tb.draw(p.scaled(colX, fy, s).withText(ts), 0, 0);
   // Ventana de dibujo: se recorta si el rótulo crece.
   const vp0 = sheet.viewport;
   const vpRight = Math.min(vp0.x + vp0.w, colX - 5);
@@ -662,13 +719,13 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   }
   // Bloques: los de la columna se reacomodan entre el rótulo y el encabezado; los del área de
   // dibujo se comprimen a lo ancho si el rótulo creció.
-  const y0 = fy + tbH, y1 = fy + fh - headerH;
+  const y0 = fy + tbH0, y1 = fy + fh - headerH0;
   const ny0 = fy + tbH * s, ny1 = fy + fh - headerH * s;
   const fv = (ny1 - ny0) / (y1 - y0);
   const fhx = (vp.x + vp.w - vp0.x) / vp0.w;
   for (const b0 of sheet.blocks) {
     const b =
-      s === 1
+      s === 1 && tbH === tbH0 && headerH === headerH0
         ? b0
         : b0.x >= colX0 - 1
           ? { ...b0, x: colX + (b0.x - colX0) * s, w: b0.w * s, y: ny0 + (b0.y - y0) * fv, h: b0.h * fv }

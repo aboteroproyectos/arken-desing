@@ -69,6 +69,7 @@ function arrowHead(tip: Vec2, from: Vec2, size: number, style: string): PlanPrim
 // ─── Espacio ─────────────────────────────────────────────────
 
 function spacePlan(s: Space, mm: number): PlanPrimitive[] {
+  // `mm` aquí es el mm de TEXTO (ya multiplicado por el tamaño de texto de los planos).
   const style = "d:ARQ:espacio";
   const area = polygonArea(s.boundary);
   const lx = s.properties?.["etiqueta_x"];
@@ -84,23 +85,23 @@ function spacePlan(s: Space, mm: number): PlanPrimitive[] {
 
 // ─── Dispositivo ─────────────────────────────────────────────
 
-function devicePlan(d: Device, mm: number): PlanPrimitive[] {
+function devicePlan(d: Device, mm: number, tm = mm): PlanPrimitive[] {
   const style = `d:${d.discipline}`;
   const props = d.properties ?? {};
   const prims = drawSymbol(d.symbol, { position: d.position, rotation: d.rotation, mm, style, props, ...(d.tag ? { tag: d.tag } : {}) });
   // Rótulo corto junto al símbolo: el circuito (eléctrica) o la etiqueta que se indique.
   const label = str(props["rotulo_plano"]) || (d.symbol === "tablero" || d.symbol === "caja" ? "" : str(props["circuito"]));
   if (label && props["ocultar_rotulo"] !== true) {
-    const ox = num(props["rotulo_dx"], 2.2) * mm;
-    const oy = num(props["rotulo_dy"], -2.4) * mm;
-    prims.push({ kind: "text", at: { x: d.position.x + ox, y: d.position.y + oy }, text: label, height: 1.6 * mm, align: "left", style });
+    const ox = num(props["rotulo_dx"], 2.2) * mm + Math.max(0, tm - mm) * 0.4;
+    const oy = num(props["rotulo_dy"], -2.4) * mm - Math.max(0, tm - mm) * 0.8;
+    prims.push({ kind: "text", at: { x: d.position.x + ox, y: d.position.y + oy }, text: label, height: 1.6 * tm, align: "left", style });
   }
   return prims;
 }
 
 // ─── Recorrido ───────────────────────────────────────────────
 
-function runPlan(r: Run, mm: number): PlanPrimitive[] {
+function runPlan(r: Run, mm: number, tm = mm): PlanPrimitive[] {
   const style = `d:${r.discipline}`;
   const base = RUN_STYLES[r.system]?.paint ?? { weight: 0.35 };
   const prims: PlanPrimitive[] = [{ kind: "polyline", points: r.points, style, ...base }];
@@ -122,19 +123,19 @@ function runPlan(r: Run, mm: number): PlanPrimitive[] {
     const mid = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
     const ang = readableAngle(a, b);
     const side = num(props["rotulo_lado"], 1);
-    const off = 1.6 * mm * side;
+    const off = 1.6 * tm * side;
     const n = { x: -Math.sin(ang), y: Math.cos(ang) };
-    prims.push({ kind: "text", at: { x: mid.x + n.x * off, y: mid.y + n.y * off }, text: r.tag, height: 1.6 * mm, align: "center", rotation: ang, style, ...(base.color ? { color: base.color } : {}) });
+    prims.push({ kind: "text", at: { x: mid.x + n.x * off, y: mid.y + n.y * off }, text: r.tag, height: 1.6 * tm, align: "center", rotation: ang, style, ...(base.color ? { color: base.color } : {}) });
   }
   return prims;
 }
 
 // ─── Anotación ───────────────────────────────────────────────
 
-function annotationPlan(a: Annotation, mm: number): PlanPrimitive[] {
+function annotationPlan(a: Annotation, mm: number, tm = mm): PlanPrimitive[] {
   const style = `d:${a.discipline}`;
   const props = a.properties ?? {};
-  const size = (a.textSize ?? 2.5) * mm;
+  const size = (a.textSize ?? 2.5) * tm;
   const pts = a.points;
   const color = typeof props["color"] === "string" ? { color: props["color"] as string } : {};
   switch (a.style) {
@@ -171,7 +172,7 @@ function annotationPlan(a: Annotation, mm: number): PlanPrimitive[] {
         const p0 = pts[0]!;
         const p1 = pts[1]!;
         const ang = readableAngle(p0, p1);
-        const mid = { x: (p0.x + p1.x) / 2 - Math.sin(ang) * 2.2 * mm, y: (p0.y + p1.y) / 2 + Math.cos(ang) * 2.2 * mm };
+        const mid = { x: (p0.x + p1.x) / 2 - Math.sin(ang) * 2.2 * tm, y: (p0.y + p1.y) / 2 + Math.cos(ang) * 2.2 * tm };
         out.push({ kind: "text", at: mid, text: a.text, height: size, align: "center", rotation: ang, bold: true, style, ...color });
       }
       return out;
@@ -183,14 +184,14 @@ function annotationPlan(a: Annotation, mm: number): PlanPrimitive[] {
       const d = sub(p1, p0);
       const l = len(d) || 1;
       const u = { x: d.x / l, y: d.y / l };
-      const r = 4 * mm;
+      const r = 4 * tm;
       const c = { x: p1.x + u.x * r, y: p1.y + u.y * r };
       const circle: Vec2[] = [];
       for (let i = 0; i < 32; i++) circle.push({ x: c.x + r * Math.cos((i / 32) * 2 * Math.PI), y: c.y + r * Math.sin((i / 32) * 2 * Math.PI) });
       return [
         { kind: "polyline", points: [p0, p1], style, weight: 0.18, dash: [6, 1.2, 1, 1.2] },
         { kind: "polygon", points: circle, style, weight: 0.35, fill: "white" },
-        { kind: "text", at: c, text: a.text ?? "", height: 3.5 * mm, align: "center", bold: true, style },
+        { kind: "text", at: c, text: a.text ?? "", height: 3.5 * tm, align: "center", bold: true, style },
       ];
     }
     case "dimension": {
@@ -213,14 +214,14 @@ function annotationPlan(a: Annotation, mm: number): PlanPrimitive[] {
       ];
       const ang = readableAngle(p0, p1);
       const tn = { x: -Math.sin(ang), y: Math.cos(ang) };
-      const mid = { x: (q0.x + q1.x) / 2 + tn.x * 1.6 * mm, y: (q0.y + q1.y) / 2 + tn.y * 1.6 * mm };
+      const mid = { x: (q0.x + q1.x) / 2 + tn.x * 1.6 * tm, y: (q0.y + q1.y) / 2 + tn.y * 1.6 * tm };
       return [
         { kind: "polyline", points: [{ x: p0.x + n.x * gap, y: p0.y + n.y * gap }, { x: q0.x + n.x * ext, y: q0.y + n.y * ext }], style, weight: 0.13 },
         { kind: "polyline", points: [{ x: p1.x + n.x * gap, y: p1.y + n.y * gap }, { x: q1.x + n.x * ext, y: q1.y + n.y * ext }], style, weight: 0.13 },
         { kind: "polyline", points: [{ x: q0.x - u.x * 1.2 * mm, y: q0.y - u.y * 1.2 * mm }, { x: q1.x + u.x * 1.2 * mm, y: q1.y + u.y * 1.2 * mm }], style, weight: 0.18 },
         { kind: "polyline", points: t(q0), style, weight: 0.35 },
         { kind: "polyline", points: t(q1), style, weight: 0.35 },
-        { kind: "text", at: mid, text: a.text ?? l.toFixed(2), height: (a.textSize ?? 2) * mm, align: "center", rotation: ang, style },
+        { kind: "text", at: mid, text: a.text ?? l.toFixed(2), height: (a.textSize ?? 2) * tm, align: "center", rotation: ang, style },
       ];
     }
   }
@@ -228,26 +229,28 @@ function annotationPlan(a: Annotation, mm: number): PlanPrimitive[] {
 
 export function buildFreeElementPlan(_reader: ModelReader, e: Space | Device | Run | Annotation, levelId: Id, opts: PlanOptions): ElementPlanGeometry | undefined {
   const mm = (opts.scale ?? 50) / 1000;
+  // Tamaño de los textos de los planos (1 = normal): agranda letras y sus separaciones, no los símbolos.
+  const tm = mm * (opts.textScale ?? 1);
   let primitives: PlanPrimitive[];
   let snapPoints: SnapPoint[] = [];
   let discipline = "ARQ" as ElementPlanGeometry["discipline"];
   switch (e.kind) {
     case "Space":
-      primitives = spacePlan(e, mm);
+      primitives = spacePlan(e, tm);
       snapPoints = e.boundary.map((p) => ({ point: p, kind: "endpoint" as const }));
       break;
     case "Device":
-      primitives = devicePlan(e, mm);
+      primitives = devicePlan(e, mm, tm);
       snapPoints = [{ point: e.position, kind: "endpoint" }];
       discipline = e.discipline;
       break;
     case "Run":
-      primitives = runPlan(e, mm);
+      primitives = runPlan(e, mm, tm);
       snapPoints = e.points.map((p) => ({ point: p, kind: "endpoint" as const }));
       discipline = e.discipline;
       break;
     case "Annotation":
-      primitives = annotationPlan(e, mm);
+      primitives = annotationPlan(e, mm, tm);
       snapPoints = e.style === "text" ? [] : e.points.map((p) => ({ point: p, kind: "endpoint" as const }));
       discipline = e.discipline;
       break;

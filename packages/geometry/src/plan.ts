@@ -107,6 +107,8 @@ export interface PlanOptions {
   readonly cutHeight: Meters;
   /** Denominador de la escala de dibujo (50 = 1:50): fija el tamaño de símbolos y textos. */
   readonly scale?: number;
+  /** Tamaño de los textos de los planos (1 = normal, hasta 5). */
+  readonly textScale?: number;
 }
 
 export const DEFAULT_PLAN_OPTIONS: PlanOptions = { cutHeight: 1.2, scale: 50 };
