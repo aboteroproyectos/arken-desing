@@ -2,7 +2,7 @@
 // completo con arquitectura, estructura, mobiliario, acabados, eléctrica, iluminación y su juego de
 // planos. No usa la Casa Lote 01 ni ninguna plantilla: todo sale de reglas de diseño.
 
-import { BimStore, type BimModel, type Id, type Vec2 } from "@arken/core";
+import { BimStore, type BimModel, type Entity, type Id, type Sheet, type Vec2 } from "@arken/core";
 import { circuitResults, serviceDemand } from "@arken/calc";
 import { ProjectBuilder, chain, newId, orthoPath, rect, v, type Props } from "../builder";
 import { completeProgram, GAS_NAMES, ROOF_NAMES, type HouseProgram, type ProgramDraft } from "./program";
@@ -146,6 +146,7 @@ class Designer {
     this.buildNetworks();
     this.buildSheets();
     this.finishProject();
+    this.fitPlanSheets();
     return this.base.snapshot();
   }
 
@@ -750,7 +751,7 @@ class Designer {
     const b = this.b;
     const isA = this.wing.key === "A";
     const cp = isA ? this.carportW() : 0;
-    const westOff = cp ? cp + 2.6 : 2.6;
+    const westOff = cp ? cp + 1.3 : 1.3;
     // En A no se acotan los costados por donde salen galerías; en B y C el extremo de la galería es el sur local.
     const linkE = isA && this.lay.links.some((k) => k.side === "E");
     const linkW = isA && this.lay.links.some((k) => k.side === "W");
@@ -758,28 +759,28 @@ class Designer {
       if (Math.hypot(c.x - a.x, c.y - a.y) > 0.01) b.dim(a, c, off);
     };
     if (isA) {
-      seg(v(0, 0), v(W, 0), -3.6);
-      seg(v(0.1, 0.1), v(xa, 0.1), -2.6);
-      seg(v(xa, 0.1), v(xb, 0.1), -2.6);
-      seg(v(xb, 0.1), v(xe, 0.1), -2.6);
+      seg(v(0, 0), v(W, 0), -2.1);
+      seg(v(0.1, 0.1), v(xa, 0.1), -1.3);
+      seg(v(xa, 0.1), v(xb, 0.1), -1.3);
+      seg(v(xb, 0.1), v(xe, 0.1), -1.3);
     } else {
-      seg(v(0.1, round(L - 0.1)), v(xa, round(L - 0.1)), 1.6);
-      seg(v(xa, round(L - 0.1)), v(xb, round(L - 0.1)), 1.6);
-      seg(v(xb, round(L - 0.1)), v(xe, round(L - 0.1)), 1.6);
+      seg(v(0.1, round(L - 0.1)), v(xa, round(L - 0.1)), 1.3);
+      seg(v(xa, round(L - 0.1)), v(xb, round(L - 0.1)), 1.3);
+      seg(v(xb, round(L - 0.1)), v(xe, round(L - 0.1)), 1.3);
     }
     const chainY = (ys_: number[], x: number, off: number) => {
       const pts = [...new Set(ys_.map((y) => round(y)))].sort((a, c) => a - c);
       for (let i = 0; i + 1 < pts.length; i++) b.dim(v(x, pts[i]!), v(x, pts[i + 1]!), off);
     };
     if (!linkW) {
-      seg(v(0, 0), v(0, L), westOff + 1.4);
+      seg(v(0, 0), v(0, L), westOff + 0.8);
       chainY([0.1, ...west.map((w) => w.y1)], 0.1, westOff);
     }
     if (!linkE) {
-      chainY([0.1, ...east.map((e) => Math.min(e.y1, ys)), ys, L - 0.1], xe, -2.6);
-      seg(v(W, 0), v(W, L), -3.6);
+      chainY([0.1, ...east.map((e) => Math.min(e.y1, ys)), ys, L - 0.1], xe, -1.3);
+      seg(v(W, 0), v(W, L), -2.1);
     }
-    seg(v(0, L), v(W, L), f === 1 && isA && this.p.terraza ? 5.2 : isA ? 2.6 : 3.4);
+    seg(v(0, L), v(W, L), f === 1 && isA && this.p.terraza ? 4.9 : isA ? 1.3 : 2.1);
   }
 
   // ─── Galerías entre pabellones y patio ──────────────────────
@@ -884,12 +885,12 @@ class Designer {
     for (let li = 0; li < w.floors.length; li++) {
       this.b.levelId = this.levels[li]!;
       for (const [n, x] of xsAx) {
-        this.b.note("EST", "axis", [v(x, round(L + 0.7 + (li === 0 && isA && this.p.terraza ? 3.6 : 0))), v(x, round(L + 5.2 + (li === 0 && isA && this.p.terraza ? 3.6 : 0)))], n);
-        if (isA) this.b.note("EST", "axis", [v(x, -4.8), v(x, -8.8)], n);
+        this.b.note("EST", "axis", [v(x, round(L + 0.5 + (li === 0 && isA && this.p.terraza ? 3.6 : 0))), v(x, round(L + (isA ? 2.6 : 3.4) + (li === 0 && isA && this.p.terraza ? 3.6 : 0)))], n);
+        if (isA) this.b.note("EST", "axis", [v(x, -0.5), v(x, -3.4)], n);
       }
       ysAx.forEach((yy, i) => {
-        if (!linkW) this.b.note("EST", "axis", [v(round(-0.7 - cp), yy), v(round(-4.9 - cp - (cp ? 1.4 : 0)), yy)], `${pre}${letters[i]}`);
-        if (!linkE) this.b.note("EST", "axis", [v(round(W + 4.6), yy), v(round(W + 8.6), yy)], `${pre}${letters[i]}`);
+        if (!linkW) this.b.note("EST", "axis", [v(round(-0.5 - cp), yy), v(round(-3.4 - cp), yy)], `${pre}${letters[i]}`);
+        if (!linkE) this.b.note("EST", "axis", [v(round(W + 0.5), yy), v(round(W + 3.4), yy)], `${pre}${letters[i]}`);
       });
       for (const [, x] of xsAx) for (const yy of ysAx) this.b.note("EST", "solid", rect(x - 0.1, yy - 0.1, x + 0.1, yy + 0.1), undefined, { perfil: "Columna en concreto / HSS 200×200×8 mm embebida en muro" });
     }
@@ -1202,6 +1203,40 @@ class Designer {
     buildRain(c);
     buildComms(c);
     if (this.p.gas !== "no") buildGas(c);
+  }
+
+  /**
+   * Las plantas ocupan la mayor parte de la hoja: se mide todo lo dibujado en los niveles de las plantas
+   * (muros, espacios, aparatos, recorridos, cotas y ejes) y se usa la mayor escala normalizada con la que
+   * cabe en la ventana de dibujo, con el mismo encuadre en todos los pisos para que se superpongan.
+   */
+  private fitPlanSheets(): void {
+    const st = this.base.store;
+    const ents = [...st.entities()] as Entity[];
+    const sheets = ents.filter((e): e is Sheet => e.kind === "Sheet" && e.disciplines.length > 0);
+    if (!sheets.length) return;
+    const lv = new Set(sheets.map((s) => s.levelId));
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = (q: Vec2, r = 0) => {
+      x0 = Math.min(x0, q.x - r); y0 = Math.min(y0, q.y - r); x1 = Math.max(x1, q.x + r); y1 = Math.max(y1, q.y + r);
+    };
+    const onPlan = new Set<Id>();
+    for (const r of st.relations()) if (r.kind === "RelContainedIn" && lv.has(r.levelId)) r.elementIds.forEach((id) => onPlan.add(id));
+    for (const e of ents) {
+      if (!onPlan.has(e.id)) continue;
+      if (e.kind === "Wall") (add(e.start, 0.3), add(e.end, 0.3));
+      else if (e.kind === "Space") e.boundary.forEach((q) => add(q));
+      else if (e.kind === "Device") add(e.position, 0.4);
+      else if (e.kind === "Run" || e.kind === "Annotation") e.points.forEach((q) => add(q));
+    }
+    if (!Number.isFinite(x0)) return;
+    // Márgenes en mm de papel: burbujas de ejes y textos de cotas (12), norte (arriba a la derecha) y nombre del plano (abajo).
+    const VP = sheets[0]!.viewport;
+    const fit = (sc: number) => ((x1 - x0) * 1000) / sc + 2 * 12 <= VP.w && ((y1 - y0) * 1000) / sc + 12 + 22 <= VP.h;
+    const scale = [50, 75, 100, 125, 150, 200, 250].find(fit) ?? 250;
+    const k = scale / 1000;
+    const center = v(round((x0 + x1) / 2), round((y0 + y1) / 2 + (22 - 12) / 2 * k));
+    for (const s of sheets) this.base.put({ ...s, scale, viewCenter: center, fields: { ...s.fields, escala: `1:${scale}` } });
   }
 
   // ─── Planos ─────────────────────────────────────────────────

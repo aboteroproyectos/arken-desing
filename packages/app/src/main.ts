@@ -873,9 +873,16 @@ function renderTitlePanel(): void {
   const esc0 = Number(tb["rotulo_escala"]) || 1;
   html += `<label class="f"><span>Tamaño del rótulo</span><span class="range"><input data-field="rotulo_escala" type="range" min="0.8" max="1.6" step="0.05" value="${esc0}"><b>${Math.round(esc0 * 100)} %</b></span></label>`;
   const tx0 = Number(tb["rotulo_texto"]) || 1;
-  html += `<label class="f"><span>Texto del rótulo y notas</span><span class="range"><input data-field="rotulo_texto" type="range" min="0.7" max="5" step="0.1" value="${tx0}"><b>${Math.round(tx0 * 100)} %</b></span></label>`;
+  html += `<label class="f"><span>Texto del rótulo</span><span class="range"><input data-field="rotulo_texto" type="range" min="0.7" max="5" step="0.1" value="${tx0}"><b>${Math.round(tx0 * 100)} %</b></span></label>`;
+  const sl = (key: string, label: string, min: number, max: number, def: number) => {
+    const v0 = Number(tb[key]) || def;
+    return `<label class="f"><span>${label}</span><span class="range"><input data-field="${key}" type="range" min="${min}" max="${max}" step="0.1" value="${v0}"><b>${Math.round(v0 * 100)} %</b></span></label>`;
+  };
+  html += sl("titulo_texto", "Nombre de cada plano", 0.7, 4, 1.4);
+  html += sl("notas_texto", "Notas", 0.7, 5, tx0);
+  html += sl("convenciones_texto", "Convenciones", 0.7, 3, 1);
   const tp0 = Number(tb["texto_planos"]) || 1;
-  html += `<label class="f"><span>Texto de los planos</span><span class="range"><input data-field="texto_planos" type="range" min="0.5" max="5" step="0.1" value="${tp0}"><b>${Math.round(tp0 * 100)} %</b></span></label>`;
+  html += `<label class="f"><span>Textos dentro de los planos (nombres de espacios, cotas, rótulos)</span><span class="range"><input data-field="texto_planos" type="range" min="0.5" max="5" step="0.1" value="${tp0}"><b>${Math.round(tp0 * 100)} %</b></span></label>`;
   const logo = (tb["logo"] ?? "").trim();
   const logoName = logo.toLowerCase() === "ninguno" ? "Sin logo" : logo.startsWith("data:image/") ? "Logo propio" : "ARKEN DISEÑO";
   html += `<div class="f"><span>Logo (${logoName})</span><span class="logo-btns"><button type="button" data-logo="subir">Subir…</button><button type="button" data-logo="arken">ARKEN</button><button type="button" data-logo="ninguno">Quitar</button></span></div>`;

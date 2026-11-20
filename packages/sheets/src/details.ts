@@ -215,16 +215,22 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
   const slope = num(pr, "cubierta_pendiente_pct", 30);
   const eave = num(pr, "cubierta_alero_m", 0.9);
   const t = num(pr, "cubierta_espesor_m", 0.25);
-  const cellW = b.w / 2;
-  const cellH = (b.h - 8) / 2;
   const cp = { x0: num(pr, "parqueadero_xmin", NaN), x1: num(pr, "parqueadero_xmax", NaN), y0: num(pr, "parqueadero_ymin", NaN), y1: num(pr, "parqueadero_ymax", NaN), h: num(pr, "parqueadero_altura_m", 2.8) };
   const hasCp = Number.isFinite(cp.x0);
   // Escala: la mayor escala normalizada con la que las cuatro fachadas caben en su casilla.
   const spanX = W + 2 * eave + 1 + (hasCp ? Math.max(0, X0 - cp.x0) + Math.max(0, cp.x1 - X1) : 0);
   const spanY = L + 2 * eave + 1;
   const tall = Math.max(...vols.map((v) => v.floors * fh + Math.max(v.x1 - v.x0, v.y1 - v.y0) * (slope / 100) * 0.5)) + 1.2;
-  const fitMm = Math.min((cellW - 40) / Math.max(spanX, spanY), (cellH - 26) / tall);
-  const scale = [50, 75, 100, 125, 150, 200, 250].find((sc) => 1000 / sc <= fitMm) ?? 250;
+  // Dos acomodos posibles; se usa el que deja las fachadas más grandes: 2 × 2 con columnas a la medida
+  // de cada fachada (sur y norte a la izquierda, oriente y occidente a la derecha) o una columna de cuatro.
+  const fit2 = Math.min((b.w - 64) / (spanX + spanY), ((b.h - 8) / 2 - 24) / tall);
+  const fit1 = Math.min((b.w - 36) / Math.max(spanX, spanY), ((b.h - 8) / 4 - 20) / tall);
+  const oneCol = fit1 > fit2 * 1.05;
+  const fitMm = oneCol ? fit1 : fit2;
+  const rows = oneCol ? 4 : 2;
+  const cellH = (b.h - 8) / rows;
+  const colW = oneCol ? [b.w, 0] : [b.w * ((spanX + 2) / (spanX + spanY + 4)), b.w * ((spanY + 2) / (spanX + spanY + 4))];
+  const scale = SCALES.find((sc) => 1000 / sc <= fitMm) ?? 250;
   const mm = 1000 / scale;
   const wallColor = str(pr, "estilo_muro_color", "#ece6da");
   const wallKind = str(pr, "estilo_muro", "estuco");
@@ -272,10 +278,12 @@ export function drawStyledElevations(p: Pen, reader: ModelReader, b: SheetBlock)
     }
     const top = Math.max(...views.flatMap((w) => [...w.rv.roof.flat().map(([, z]) => z), w.rv.wallTop(w.vw / 2)]));
     const drawW = (uR - uL) * mm;
-    const col = i % 2,
-      row = Math.floor(i / 2);
-    const cx0 = b.x + col * cellW + 22 + (cellW - 30 - drawW) / 2 - uL * mm;
-    const cy0 = b.y + (1 - row) * cellH + (cellH - top * mm) / 2 + 5;
+    // Orden: sur, occidente, norte, oriente. En 2 × 2, sur y norte van en la columna izquierda.
+    const col = oneCol ? 0 : i % 2,
+      row = oneCol ? i : Math.floor(i / 2);
+    const cellW = colW[col]!;
+    const cx0 = b.x + (col ? colW[0]! : 0) + 22 + (cellW - 30 - drawW) / 2 - uL * mm;
+    const cy0 = b.y + (rows - 1 - row) * cellH + (cellH - top * mm) / 2 + 5;
     const Y = (z: number) => cy0 + z * mm;
     const zb = 0.6;
 
@@ -422,7 +430,7 @@ export function drawSections(p: Pen, reader: ModelReader, b: SheetBlock): void {
   const t = num(pr, "cubierta_espesor_m", 0.25);
   const tallS = floors * fh + Math.max(W, L) * (slope / 100) * 0.5 + 1.2;
   const fitS = Math.min((b.w - 60) / (Math.max(W, L) + 2 * eave), ((b.h - 10) / 2 - 24) / tallS);
-  const scale = [50, 75, 100, 125, 150, 200, 250].find((sc) => 1000 / sc <= fitS) ?? 250;
+  const scale = SCALES.find((sc) => 1000 / sc <= fitS) ?? 250;
   const mm = 1000 / scale;
   const ceiling = 2.7;
   const cutX = num(pr, "corte_x", W / 2);
@@ -580,16 +588,14 @@ export function drawDoorSchedule(p: Pen, reader: ModelReader, b: SheetBlock): vo
   const tableH = Math.min(b.h * 0.42, 10 + types.length * 3.6);
   const gridTop = b.y + b.h - 8;
   const gridBottom = b.y + tableH + 18;
-  const cols = Math.min(10, Math.max(4, types.length));
-  const cw = b.w / cols;
-  const rows = Math.ceil(types.length / cols);
-  const ch = (gridTop - gridBottom) / Math.max(1, rows);
-  const mm = snapMm(Math.min(20, (ch - 14) / 2.8, (cw - 8) / 1.8));
+  const maxDW = Math.max(...types.map((g) => g[0]!.width), 0.9);
+  const maxDH = Math.max(...types.map((g) => g[0]!.height), 2.1);
+  const { cols, cw, ch, mm } = bestGrid(types.length, b.w, gridTop - gridBottom, (cw, ch) => Math.min(50, (ch - 14) / maxDH, (cw - 8) / maxDW));
   p.text(b.title ?? `CUADRO DE PUERTAS · ALZADOS · ESCALA 1:${Math.round(1000 / mm)}`, b.x, b.y + b.h - 3, 2.6, "left", true, BRAND);
   types.forEach((g, i) => {
     const d = g[0]!;
     const cx = b.x + (i % cols) * cw + cw / 2;
-    const by = gridTop - Math.floor(i / cols) * ch - ch + 10;
+    const by = gridTop - Math.floor(i / cols) * ch - ch + Math.max(10, (ch - maxDH * mm) / 2);
     const w = d.width * mm,
       h = d.height * mm;
     const x = cx - w / 2;
@@ -640,18 +646,14 @@ export function drawWindowSchedule(p: Pen, reader: ModelReader, b: SheetBlock): 
   const tableH = Math.min(b.h * 0.45, 10 + types.length * 3.6);
   const gridTop = b.y + b.h - 8;
   const gridBottom = b.y + tableH + 18;
-  const cols = Math.min(7, Math.max(3, Math.ceil(Math.sqrt(types.length * 2))));
-  const cw = b.w / cols;
-  const rows = Math.ceil(types.length / cols);
-  const ch = (gridTop - gridBottom) / Math.max(1, rows);
   const maxW = Math.max(...types.map((g) => g[0]!.width), 1);
   const maxH = Math.max(...types.map((g) => g[0]!.height + g[0]!.sill), 1);
-  const mm = snapMm(Math.min(20, (cw - 10) / maxW, (ch - 14) / maxH));
+  const { cols, cw, ch, mm } = bestGrid(types.length, b.w, gridTop - gridBottom, (cw, ch) => Math.min(50, (cw - 14) / maxW, (ch - 14) / maxH));
   p.text(b.title ?? `CUADRO DE VENTANAS · ALZADOS · ESCALA 1:${Math.round(1000 / mm)}`, b.x, b.y + b.h - 3, 2.6, "left", true, BRAND);
   types.forEach((g, i) => {
     const w0 = g[0]!;
     const cx = b.x + (i % cols) * cw + cw / 2;
-    const fy = gridTop - Math.floor(i / cols) * ch - ch + 9; // piso
+    const fy = gridTop - Math.floor(i / cols) * ch - ch + Math.max(9, (ch - maxH * mm) / 2); // piso
     const w = w0.width * mm,
       h = w0.height * mm;
     const x = cx - w / 2,
@@ -708,19 +710,15 @@ export function drawFurniture(p: Pen, reader: ModelReader, b: SheetBlock): void 
   const tableH = Math.min(b.h * 0.45, 10 + types.length * 3.6);
   const gridTop = b.y + b.h - 8;
   const gridBottom = b.y + tableH + 18;
-  const cols = Math.min(6, Math.max(3, Math.ceil(Math.sqrt(types.length * 1.6))));
-  const cw = b.w / cols;
-  const rows = Math.ceil(types.length / cols);
-  const ch = (gridTop - gridBottom) / Math.max(1, rows);
   const heightOf = (m: Item) => (m.tipo === "closet" || m.tipo === "alto" ? 2.4 : /escritorio/i.test(m.name) ? 0.75 : /tv/i.test(m.name) ? 0.55 : /isla|cocina|lavadero|bbq|buffet/i.test(m.name) ? 0.9 : m.tipo === "lavamanos" ? 0.85 : 0.45);
   const maxW = Math.max(...types.map((g) => g[0]!.w), 1);
-  const mm = snapMm(Math.min(20, (cw - 10) / maxW, (ch - 16) / 2.5));
+  const { cols, cw, ch, mm } = bestGrid(types.length, b.w, gridTop - gridBottom, (cw, ch) => Math.min(50, (cw - 12) / maxW, (ch - 16) / 2.5));
   p.text(b.title ?? `CLÓSETS Y MUEBLES EN MADERA · ALZADOS FRONTALES · ESCALA 1:${Math.round(1000 / mm)}`, b.x, b.y + b.h - 3, 2.6, "left", true, BRAND);
   const wood = "#d8bf9c";
   types.forEach((g, i) => {
     const m = g[0]!;
     const cx = b.x + (i % cols) * cw + cw / 2;
-    const fy = gridTop - Math.floor(i / cols) * ch - ch + 11;
+    const fy = gridTop - Math.floor(i / cols) * ch - ch + Math.max(11, (ch - 2.4 * mm) / 2);
     const H = heightOf(m);
     const lift = /tv/i.test(m.name) ? 0.35 : 0;
     const w = m.w * mm,
@@ -835,9 +833,26 @@ function topAt(poly: [number, number][], u: number): number {
   return best;
 }
 
+/** Cuadrícula de alzados (columnas × filas) con la que cada alzado sale a la mayor escala normalizada. */
+function bestGrid(n: number, w: number, h: number, fit: (cw: number, ch: number) => number): { cols: number; cw: number; ch: number; mm: number } {
+  let best = { cols: 1, cw: w, ch: h, mm: 0, raw: -1 };
+  for (let cols = 1; cols <= Math.max(1, n); cols++) {
+    const rows = Math.ceil(Math.max(1, n) / cols);
+    const cw = w / cols;
+    const ch = h / rows;
+    const raw = fit(cw, ch);
+    const mm = snapMm(raw);
+    if (mm > best.mm || (mm === best.mm && raw > best.raw)) best = { cols, cw, ch, mm, raw };
+  }
+  return best;
+}
+
+/** Escalas normalizadas de dibujo, de la más grande a la más pequeña. */
+export const SCALES = [20, 25, 50, 75, 100, 125, 150, 200, 250];
+
 /** Milímetros por metro de la mayor escala normalizada que no pasa de `max`. */
 function snapMm(max: number): number {
-  const sc = [50, 75, 100, 125, 150, 200].find((k) => 1000 / k <= max) ?? 200;
+  const sc = SCALES.find((k) => 1000 / k <= max) ?? 250;
   return 1000 / sc;
 }
 

@@ -323,15 +323,17 @@ export function drawTable(p: Pen, t: Table, x: number, top: number, w: number, m
 
 // ─── Convenciones (leyenda automática) ───────────────────────
 
-function drawLegend(p: Pen, reader: ModelReader, sheet: Sheet, b: SheetBlock): void {
+function drawLegend(p: Pen, reader: ModelReader, sheet: Sheet, b: SheetBlock, cf0 = 1): void {
   const { symbols, systems } = usedSymbols(reader, sheet.levelId, sheet.disciplines);
   // El mobiliario de arquitectura no va en la leyenda; los equipos de tamaño real sí.
   const syms = symbols.filter((s) => SYMBOLS.has(s) && SYMBOLS.get(s)!.discipline !== "ARQ");
   syms.sort((a, c) => (SYMBOLS.get(a)?.discipline ?? "").localeCompare(SYMBOLS.get(c)?.discipline ?? "") || a.localeCompare(c));
   const items = syms.length + systems.length;
-  const rh = Math.max(4, Math.min(6.2, (b.h - 8) / Math.max(items, 1)));
-  let y = b.y + b.h - 4;
-  p.text(b.title ?? "CONVENCIONES", b.x, y, 2.4, "left", true, BRAND);
+  // `cf`: tamaño elegido por el usuario; si las convenciones no caben en el bloque, se reduce hasta que quepan.
+  const cf = Math.max(0.6, Math.min(cf0, (b.h - 4 - 4 * cf0) / Math.max(items, 1) / 4.2));
+  const rh = Math.max(4 * cf, Math.min(6.2 * cf, (b.h - 4 - 4 * cf) / Math.max(items, 1)));
+  let y = b.y + b.h - 4 * cf;
+  p.text(b.title ?? "CONVENCIONES", b.x, y, 2.4 * cf, "left", true, BRAND);
   y -= rh;
   const iconX = b.x + 6;
   for (const key of syms) {
@@ -342,8 +344,8 @@ function drawLegend(p: Pen, reader: ModelReader, sheet: Sheet, b: SheetBlock): v
       ? drawSymbol(key, { position: at, rotation: 0, mm: p.k, style: `d:${def.discipline}`, props: legendProps(key, p.k) })
       : drawSymbol(key, { position: at, rotation: 0, mm: p.k, style: `d:${def.discipline}`, props: {} });
     p.out.push(...prims);
-    const lines = wrap(def.name, Math.floor((b.w - 14) / 1.12));
-    lines.slice(0, 2).forEach((l, i) => p.text(l, b.x + 13, y + (lines.length > 1 ? 1.1 - i * 2.4 : 0), 1.75));
+    const lines = wrap(def.name, Math.floor((b.w - 14) / (1.12 * cf)));
+    lines.slice(0, 2).forEach((l, i) => p.text(l, b.x + 13, y + (lines.length > 1 ? (1.1 - i * 2.4) * cf : 0), 1.75 * cf));
     y -= rh;
   }
   for (const sys of systems) {
@@ -351,8 +353,8 @@ function drawLegend(p: Pen, reader: ModelReader, sheet: Sheet, b: SheetBlock): v
     if (!st) continue;
     const disc = sheet.disciplines[0] ?? "ARQ";
     p.out.push({ kind: "polyline", points: [p.w(b.x + 1, y), p.w(b.x + 11, y)], style: `d:${disc}`, ...st.paint });
-    const lines = wrap(`${sys}: ${st.name}`, Math.floor((b.w - 14) / 1.12));
-    lines.slice(0, 2).forEach((l, i) => p.text(l, b.x + 13, y + (lines.length > 1 ? 1.1 - i * 2.4 : 0), 1.75));
+    const lines = wrap(`${sys}: ${st.name}`, Math.floor((b.w - 14) / (1.12 * cf)));
+    lines.slice(0, 2).forEach((l, i) => p.text(l, b.x + 13, y + (lines.length > 1 ? (1.1 - i * 2.4) * cf : 0), 1.75 * cf));
     y -= rh;
   }
 }
@@ -714,8 +716,11 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
     hd = headerLayout(reader, sheet, colW0, ts);
     tb = titleBlockLayout(reader, sheet, colW0, ts);
   }
-  // Las notas de la columna crecen con el texto del rótulo (sin la reducción por espacio).
-  const notesScale = Math.min(5, Math.max(0.7, Number(F["rotulo_texto"]) || 1));
+  // Tamaños elegidos por el usuario: notas (por defecto siguen al texto del rótulo), convenciones y nombre del plano.
+  const clampF = (v: unknown, lo: number, hi: number, d: number) => Math.min(hi, Math.max(lo, Number(v) || d));
+  const notesScale = clampF(F["notas_texto"], 0.7, 5, clampF(F["rotulo_texto"], 0.7, 5, 1));
+  const legendScale = clampF(F["convenciones_texto"], 0.7, 3, 1);
+  const titleScale = clampF(F["titulo_texto"], 0.7, 4, 1.4);
   const headerH0 = 30;
   const tbH0 = 96;
   const headerH = hd.h;
@@ -728,8 +733,10 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
   const vp = { ...vp0, w: vpRight - vp0.x };
   const isPlan = sheet.disciplines.length > 0;
   const scaleText = sheet.fields["escala"] ?? (isPlan ? `1:${sheet.scale}` : "INDICADA");
-  p.text(`${sheet.title.toUpperCase()}`, vp.x + 2, vp.y + 4, 3.2, "left", true);
-  p.text(`ESCALA ${scaleText}${isPlan ? " · " + sheet.disciplines.map((d) => DISCIPLINE_NAMES[d]).join(" · ") : ""}`, vp.x + 2, vp.y + 0.6, 2);
+  // Nombre del plano (abajo a la izquierda): su tamaño lo elige el usuario (`titulo_texto`).
+  const tt = titleScale;
+  p.text(`ESCALA ${scaleText}${isPlan ? " · " + sheet.disciplines.map((d) => DISCIPLINE_NAMES[d]).join(" · ") : ""}`, vp.x + 2, vp.y + 0.6, 1.6 * tt);
+  p.text(`${sheet.title.toUpperCase()}`, vp.x + 2, vp.y + 0.6 + 2.9 * tt, 3.2 * tt, "left", true);
   // Norte (solo en plantas)
   if (isPlan) {
     const nx = vp.x + vp.w - 14;
@@ -751,8 +758,8 @@ export function buildSheet(reader: ModelReader, sheet: Sheet): SheetGeometry {
         : b0.x >= colX0 - 1
           ? { ...b0, x: colX + (b0.x - colX0) * s, w: b0.w * s, y: ny0 + (b0.y - y0) * fv, h: b0.h * fv }
           : { ...b0, x: vp0.x + (b0.x - vp0.x) * fhx, w: b0.w * fhx };
-    if (b.type === "convenciones") drawLegend(p, reader, sheet, b);
-    else if (b.type === "notas") drawNotes(p, b, b.x >= colX0 - 1 ? notesScale : 1);
+    if (b.type === "convenciones") drawLegend(p, reader, sheet, b, legendScale);
+    else if (b.type === "notas") drawNotes(p, b, notesScale);
     else if (b.type === "unifilar") drawSingleLine(p, reader, b);
     else if (b.type === "fachadas") (projectHas(reader, "cubierta_tipo") ? drawStyledElevations(p, reader, b) : drawElevations(p, reader, sheet, b));
     else if (b.type === "cortes") drawSections(p, reader, b);
