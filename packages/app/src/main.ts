@@ -45,6 +45,7 @@ import { FINISHES, SPEC_FIELDS, buildLote01, checkSpec, defaultSpec, finishProps
 import { showDesignAssistant } from "./assistant";
 import { getProject, listProjects, putProject, summarize, type LibRecord } from "./library";
 import { makeRecord, showLibrary } from "./libraryui";
+import { showRenderStudio } from "./render3d/ui";
 import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, titleLogo, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
 import { calcReportHtml, type ReportChapter } from "@arken/calc";
@@ -1323,6 +1324,16 @@ $<HTMLButtonElement>("#library").addEventListener("click", async () => {
     say,
   });
 });
+$<HTMLButtonElement>("#render3d").addEventListener("click", () =>
+  showRenderStudio({
+    reader: () => store,
+    projectName: projectLabel,
+    fileName: arkenName,
+    save: (name, data) => download(name, data instanceof Blob ? data : new Blob([data as Uint8Array<ArrayBuffer>])),
+    say,
+    measure: canvasMeasure,
+  }),
+);
 $<HTMLButtonElement>("#new").addEventListener("click", () =>
   showDesignAssistant({
     load: async (model, msg) => {
