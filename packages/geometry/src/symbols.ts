@@ -206,6 +206,9 @@ const LIST: SymbolDef[] = [
       b.text(str(c.props["rotulo"], "TANQUE"), 0, 0, 1.6, "center", true);
     },
   },
+  { key: "calentador-electrico", discipline: "HID", name: "Calentador eléctrico de acumulación (capacidad indicada)", draw: (b) => labeled(b, "CAE", 4, 2.6) },
+  { key: "montante", discipline: "HID", name: "Montante vertical de agua (sube / baja entre pisos)", draw: (b, c) => { b.circle(0, 0, 1.5, { fill: "solid", color: "#ffffff", weight: 0.3 }).circle(0, 0, 0.6, F); b.text(str(c.props["rotulo"], "M"), 1.9, 0.9, 1.4, "left", true); } },
+  { key: "bajante-an", discipline: "SAN", name: "Bajante de aguas residuales Ø 4\" (con ventilación a cubierta)", draw: (b, c) => { b.circle(0, 0, 1.7, W).circle(0, 0, 0.7, F); b.text(str(c.props["rotulo"], "BAN"), 2.1, 1.3, 1.3, "left"); } },
   { key: "calentador", discipline: "HID", name: "Calentador de paso a gas, tiro forzado, 20 L/min", draw: (b) => labeled(b, "CAL", 4, 2.6) },
   { key: "llave-jardin", discipline: "HID", name: "Llave de jardín / manguera 1/2\" con antisifón", draw: (b) => { b.circle(0, 0, 1, { fill: "solid", color: "#1c6dd0" }); b.text("LL", 1.6, 1.2, 1.3, "left"); } },
   { key: "filtro", discipline: "HID", name: "Filtro de sedimentos y carbón activado", draw: (b) => labeled(b, "F", 2.2, 2.2) },
@@ -247,6 +250,37 @@ const LIST: SymbolDef[] = [
   { key: "medidor-gas", discipline: "GAS", name: "Centro de medición: válvula, regulador 2.ª etapa y medidor G6", draw: (b) => labeled(b, "MG", 3.6, 2.4) },
   { key: "valvula-gas", discipline: "GAS", name: "Válvula de corte general de gas", draw: (b) => bowtie(b, 1.2, 0.9, { fill: "solid", color: "#c77700" }) },
   { key: "artefacto-gas", discipline: "GAS", name: "Artefacto a gas (potencia indicada)", draw: (b, c) => labeled(b, c.tag ?? "GAS", 4, 2.2) },
+  {
+    key: "tanque-glp",
+    discipline: "GAS",
+    name: "Tanque estacionario de GLP (capacidad indicada) con regulador de 1.ª etapa",
+    realSize: true,
+    draw: (b, c) => {
+      const l = num(c.props["largo_m"], 1.9);
+      const d = num(c.props["diametro_m"], 0.76);
+      const r = d / 2;
+      b.rect(-l / 2 + r, -r, l - d, d, W).circle(-l / 2 + r, 0, r, W).circle(l / 2 - r, 0, r, W).rect(-l / 2 + r, -r + 0.02, l - d, d - 0.04, { fill: "solid", color: "#ffffff", weight: 0 });
+      b.line([[-l / 2 + r, -r], [l / 2 - r, -r]]).line([[-l / 2 + r, r], [l / 2 - r, r]]);
+      b.text(str(c.props["rotulo"], "GLP"), 0, 0, 1.5, "center", true);
+    },
+  },
+  {
+    key: "pipetas",
+    discipline: "GAS",
+    name: "Caseta de cilindros (pipetas) de GLP con múltiple y regulador de cambio automático",
+    realSize: true,
+    draw: (b, c) => {
+      const n = Math.max(2, num(c.props["cilindros"], 2));
+      const w = num(c.props["ancho_m"], 0.5 * n + 0.4);
+      const h = num(c.props["fondo_m"], 0.8);
+      b.rect(-w / 2, -h / 2, w, h, W).rect(-w / 2 + 0.06, -h / 2 + 0.06, w - 0.12, h - 0.12);
+      const pitch = w / n;
+      const cr = Math.min(0.19, pitch * 0.36, h * 0.3);
+      for (let i = 0; i < n; i++) b.circle(-w / 2 + pitch * (i + 0.5), 0.05 * h, cr, W).circle(-w / 2 + pitch * (i + 0.5), 0.05 * h, cr * 0.3, F);
+      b.line([[-w / 2 + pitch / 2, -h * 0.3], [w / 2 - pitch / 2, -h * 0.3]]);
+      b.text(str(c.props["rotulo"], "GLP"), 0, -h / 2 - 0.25, 1.4, "center", true);
+    },
+  },
   { key: "rejilla-ventilacion", discipline: "GAS", name: "Rejilla de ventilación permanente (NTC 3631)", draw: (b) => { b.box(0, 0, 3, 1.4, W); for (let i = -1; i <= 1; i++) b.line([[i * 0.8 - 0.4, -0.7], [i * 0.8 + 0.4, 0.7]], thin); } },
 
   // ─── Solar fotovoltaica ───

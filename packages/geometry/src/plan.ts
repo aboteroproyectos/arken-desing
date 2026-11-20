@@ -56,6 +56,15 @@ export type PlanPrimitive =
       readonly style: StyleKey;
     } & Paint)
   | {
+      /** Imagen rectangular (logos del rótulo). `points` = esquinas inf-izq, inf-der, sup-der, sup-izq. */
+      readonly kind: "image";
+      readonly points: readonly Vec2[];
+      /** URL de datos (PNG o JPEG). */
+      readonly src: string;
+      readonly style: StyleKey;
+      readonly color?: string;
+    }
+  | {
       readonly kind: "text";
       readonly at: Vec2;
       readonly text: string;
@@ -98,6 +107,8 @@ export interface PlanOptions {
   readonly cutHeight: Meters;
   /** Denominador de la escala de dibujo (50 = 1:50): fija el tamaño de símbolos y textos. */
   readonly scale?: number;
+  /** Tamaño de los textos de los planos (1 = normal, hasta 5). */
+  readonly textScale?: number;
 }
 
 export const DEFAULT_PLAN_OPTIONS: PlanOptions = { cutHeight: 1.2, scale: 50 };

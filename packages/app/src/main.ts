@@ -12,7 +12,6 @@ import {
   DISCIPLINE_NAMES,
   PAPER_MM,
   createLevelElement,
-  createStarterModel,
   createWall,
   deleteElements,
   getOfKind,
@@ -42,10 +41,20 @@ import {
   type Wall,
 } from "@arken/core";
 import { PlanGeometryEngine, RUN_STYLES, SYMBOLS, buildWallFrame, toLocal } from "@arken/geometry";
-import { buildLote01 } from "@arken/projects";
-import { allSheets, buildSheet, titleFields, type SheetGeometry } from "@arken/sheets";
+import { FINISHES, SPEC_FIELDS, buildLote01, checkSpec, defaultSpec, finishProps, generateHouse, type FinishLevel, type HouseSpec, type RoomType } from "@arken/projects";
+import { showDesignAssistant } from "./assistant";
+import { getProject, listProjects, putProject, summarize, type LibRecord } from "./library";
+import { makeRecord, showLibrary } from "./libraryui";
+import { showRenderStudio } from "./render3d/ui";
+import { LOGO_ARKEN_DISENO, allSheets, buildSheet, titleFields, titleLogo, type SheetGeometry } from "@arken/sheets";
 import { SpatialIndexManager, type SnapResult } from "@arken/spatial";
-import { download, printSvg, sheetDxf, sheetPng, sheetSvg } from "./export";
+import { calcReportHtml, type ReportChapter } from "@arken/calc";
+import { canvasMeasure, download, modelDxf, sheetDxf, sheetPdfPage, sheetPng, sheetSvg } from "./export";
+import { PdfDocument } from "./pdf";
+import { Terrain, decodeSurvey, defaultPlacement, encodeSurvey, readSurvey, sampleSurveyDxf, type Placement } from "@arken/terrain";
+import { TerrainView, houseFootprint, implantationSheet, siteEarthwork, surveyCsv, topoChapter, topoDxf, type Site } from "./topo";
+import { safeName, zip, type ZipEntry } from "./zip";
+import { onImageLoaded } from "./paint";
 import { PlanRenderer } from "./renderer";
 import { editableFilter, levelOfView, sheetOf, visibleGeoms, type ViewMode } from "./scene";
 import { Viewport } from "./viewport";
@@ -67,9 +76,15 @@ function initialModel(): { model: BimModel; restored: boolean } {
 }
 const init = initialModel();
 const store = new BimStore(init.model);
-const engine = new PlanGeometryEngine({ cutHeight: 1.2, scale: 50 });
+const engine = new PlanGeometryEngine({ cutHeight: 1.2, scale: 50, textScale: planTextScale() });
 const spatial = new SpatialIndexManager();
 spatial.rebuildAll(engine.rebuildAll(store).updated);
+
+/** Tamaño de los textos de los planos (cotas, nombres de espacios, rótulos de aparatos…), 50 % a 500 %. */
+function planTextScale(): number {
+  const p = [...store.entities()].find((e): e is Project => e.kind === "Project");
+  return Math.min(5, Math.max(0.5, Number(p?.titleBlock?.["texto_planos"]) || 1));
+}
 
 const levels = (): Level[] => [...store.entities()].filter((e): e is Level => e.kind === "Level").sort((a, b) => a.elevation - b.elevation);
 let mode: ViewMode = defaultMode();
@@ -108,13 +123,24 @@ const symbolSelect = $<HTMLSelectElement>("#symbol");
 const systemSelect = $<HTMLSelectElement>("#system");
 const panel = $<HTMLDivElement>("#panel");
 
+// Marca ARKEN 360: logo de ARKEN DISEÑO en la barra y como icono de la pestaña (va dentro del código, sirve sin servidor).
+$<HTMLImageElement>("#brand-logo").src = LOGO_ARKEN_DISENO;
+{
+  const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]') ?? document.head.appendChild(Object.assign(document.createElement("link"), { rel: "icon" }));
+  icon.href = LOGO_ARKEN_DISENO;
+}
+
 const view = new Viewport();
 const renderer = new PlanRenderer(canvas, view);
 
 // ─── Reacción a los cambios del modelo ──────────────────────
 let autosaveTimer: number | undefined;
 store.subscribe((e: ChangeEvent) => {
-  spatial.applyGeometryUpdate(engine.applyChange(store, e));
+  const ts = planTextScale();
+  if (ts !== engine.options.textScale) {
+    engine.options = { ...engine.options, textScale: ts };
+    spatial.rebuildAll(engine.rebuildAll(store).updated);
+  } else spatial.applyGeometryUpdate(engine.applyChange(store, e));
   sheetCache.clear();
   for (const id of e.removed) selection.delete(id);
   if (hovered && !store.getEntity(hovered)) hovered = undefined;
@@ -128,15 +154,21 @@ store.subscribe((e: ChangeEvent) => {
   renderPanel();
   requestDraw();
   window.clearTimeout(autosaveTimer);
+  savedEl.classList.add("busy");
+  savedEl.textContent = "Guardando";
   autosaveTimer = window.setTimeout(autosave, 700);
 });
 
+const savedEl = $<HTMLSpanElement>("#saved");
 function autosave(): void {
+  let ok = true;
   try {
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(store.snapshot()));
   } catch {
-    /* almacenamiento lleno o bloqueado: el usuario puede guardar el JSON */
+    ok = false; /* almacenamiento lleno o bloqueado: el usuario puede guardar el JSON */
   }
+  savedEl.classList.remove("busy");
+  savedEl.textContent = ok ? "Guardado en el equipo" : "Use «Guardar»";
 }
 
 function validMode(): boolean {
@@ -163,6 +195,8 @@ function requestDraw(): void {
     renderer.draw(store, items, s?.scale ?? 50, { selected: selection, hovered, snap, selectionRect, sketch }, s ? sheetGeometry(s) : undefined);
   });
 }
+
+onImageLoaded(() => requestDraw());
 
 function say(text: string, ok = false): void {
   messageEl.textContent = text;
@@ -215,7 +249,54 @@ function refreshViews(): void {
   if (g1.children.length) viewSelect.append(g1);
   viewSelect.append(g2);
   viewSelect.value = key;
+  refreshChrome();
 }
+
+// ─── Apariencia ARKEN: menú lateral de planos, cinta de resumen y proyecto activo ───
+function railItem(key: string, n: string, t: string, active: boolean): string {
+  return `<button class="nav-item${active ? " active" : ""}" data-view="${escHtml(key)}" title="${escHtml(`${n} · ${t}`)}"><span class="nav-n">${escHtml(n)}</span><span class="nav-t">${escHtml(t)}</span></button>`;
+}
+function escHtml(t: string): string {
+  return t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+}
+function refreshChrome(): void {
+  const railSheets = $<HTMLDivElement>("#rail-sheets");
+  const railLevels = $<HTMLDivElement>("#rail-levels");
+  const key = modeKey(mode);
+  const sheets = allSheets(store);
+  const lv = levels();
+  railSheets.innerHTML = sheets.map((sh) => railItem(`s:${sh.id}`, sh.number, sh.title, key === `s:${sh.id}`)).join("") || `<span class="muted small" style="padding:4px 10px">Sin planos</span>`;
+  railLevels.innerHTML = lv.map((l, i) => railItem(`l:${l.id}`, String(i).padStart(2, "0"), l.name ?? "Nivel", key === `l:${l.id}`)).join("");
+  railSheets.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+  const pr = projectEntity();
+  const label = projectLabel();
+  $<HTMLSpanElement>("#proj-name").textContent = label === "PROYECTO" ? "— sin proyecto —" : label;
+  let area = Number(pr?.properties?.["area_construida_m2"]) || 0;
+  if (!area) area = lv.reduce((t, l) => t + (Number(l.properties?.["area_construida_m2"]) || 0), 0);
+  const floors = lv.filter((l) => !/cubierta/i.test(l.name ?? "")).length;
+  let spaces = 0;
+  let elems = 0;
+  for (const e of store.entities()) {
+    if (e.kind === "Space") spaces++;
+    if (e.kind !== "Project" && e.kind !== "Level" && e.kind !== "Sheet") elems++;
+  }
+  const cur = mode.kind === "sheet" ? sheets.find((x) => x.id === (mode as { sheetId: string }).sheetId) : undefined;
+  const curL = mode.kind === "model" ? lv.find((l) => l.id === (mode as { levelId: string }).levelId) : undefined;
+  const cell = (lab: string, val: string, sub = "", cls = "") => `<div class="ledger-cell ${cls}"><span class="lab">${lab}</span><span class="val">${escHtml(val)}</span>${sub ? `<span class="sub">${escHtml(sub)}</span>` : ""}</div>`;
+  $<HTMLDivElement>("#ledger").innerHTML =
+    cell("Planos", String(sheets.length), "juego completo") +
+    cell("Pisos", String(floors), floors === 1 ? "un nivel" : `${floors} niveles`) +
+    cell("Área construida", area ? `${area.toLocaleString("es-CO", { maximumFractionDigits: 1 })} m²` : "—") +
+    cell("Espacios", String(spaces)) +
+    cell("Elementos BIM", elems.toLocaleString("es-CO")) +
+    cell(cur ? "Plano activo" : "Vista del modelo", cur ? `${cur.number} · ${cur.title}` : curL ? `${curL.name ?? "Nivel"} · todas las disciplinas` : "—", "", "total");
+}
+document.querySelector(".rail")!.addEventListener("click", (ev) => {
+  const k = (ev.target as HTMLElement).closest<HTMLElement>("[data-view]")?.dataset.view;
+  if (!k || k === modeKey(mode)) return;
+  viewSelect.value = k;
+  viewSelect.dispatchEvent(new Event("change"));
+});
 
 function refreshDisciplines(): void {
   discEl.innerHTML = "";
@@ -790,6 +871,22 @@ function renderTitlePanel(): void {
   const s = currentSheet();
   const tb = project?.titleBlock ?? {};
   let html = `<h2>Rótulo del proyecto</h2><p class="muted">Vale para todos los planos. Cada plano puede cambiar un campo abajo.</p><div class="fields" data-scope="project">`;
+  const esc0 = Number(tb["rotulo_escala"]) || 1;
+  html += `<label class="f"><span>Tamaño del rótulo</span><span class="range"><input data-field="rotulo_escala" type="range" min="0.8" max="1.6" step="0.05" value="${esc0}"><b>${Math.round(esc0 * 100)} %</b></span></label>`;
+  const tx0 = Number(tb["rotulo_texto"]) || 1;
+  html += `<label class="f"><span>Texto del rótulo</span><span class="range"><input data-field="rotulo_texto" type="range" min="0.7" max="5" step="0.1" value="${tx0}"><b>${Math.round(tx0 * 100)} %</b></span></label>`;
+  const sl = (key: string, label: string, min: number, max: number, def: number) => {
+    const v0 = Number(tb[key]) || def;
+    return `<label class="f"><span>${label}</span><span class="range"><input data-field="${key}" type="range" min="${min}" max="${max}" step="0.1" value="${v0}"><b>${Math.round(v0 * 100)} %</b></span></label>`;
+  };
+  html += sl("titulo_texto", "Nombre de cada plano", 0.7, 4, 1.4);
+  html += sl("notas_texto", "Notas", 0.7, 5, tx0);
+  html += sl("convenciones_texto", "Convenciones", 0.7, 3, 1);
+  const tp0 = Number(tb["texto_planos"]) || 1;
+  html += `<label class="f"><span>Textos dentro de los planos (nombres de espacios, cotas, rótulos)</span><span class="range"><input data-field="texto_planos" type="range" min="0.5" max="5" step="0.1" value="${tp0}"><b>${Math.round(tp0 * 100)} %</b></span></label>`;
+  const logo = (tb["logo"] ?? "").trim();
+  const logoName = logo.toLowerCase() === "ninguno" ? "Sin logo" : logo.startsWith("data:image/") ? "Logo propio" : "ARKEN DISEÑO";
+  html += `<div class="f"><span>Logo (${logoName})</span><span class="logo-btns"><button type="button" data-logo="subir">Subir…</button><button type="button" data-logo="arken">ARKEN</button><button type="button" data-logo="ninguno">Quitar</button></span></div>`;
   for (const [k, l] of TITLE_FIELDS) if (k !== "escala") html += field(l, k, tb[k] ?? "");
   html += `</div>`;
   if (s) {
@@ -801,6 +898,24 @@ function renderTitlePanel(): void {
     html += `</div><p class="muted">Un campo vacío usa el valor del proyecto.</p>`;
   }
   panel.innerHTML = html;
+  const putTb = (patch: Record<string, string>, label: string) => {
+    if (!project) return;
+    const titleBlock: Record<string, string> = { ...(project.titleBlock ?? {}), ...patch };
+    for (const [k, v] of Object.entries(patch)) if (!v) delete titleBlock[k];
+    put({ ...project, titleBlock }, label);
+  };
+  panel.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((range) =>
+    range.addEventListener("input", () => (range.nextElementSibling!.textContent = `${Math.round(Number(range.value) * 100)} %`)),
+  );
+  panel.querySelectorAll<HTMLButtonElement>("[data-logo]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const v = b.dataset.logo!;
+      if (v === "arken") return putTb({ logo: "", logo_aspecto: "" }, "Logo ARKEN DISEÑO en el rótulo");
+      if (v === "ninguno") return putTb({ logo: "ninguno", logo_aspecto: "" }, "Quitar logo del rótulo");
+      logoInput.click();
+    }),
+  );
+  logoUpload = (dataUrl, aspect) => putTb({ logo: dataUrl, logo_aspecto: aspect.toFixed(4) }, "Logo propio en el rótulo");
   panel.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-field]").forEach((inp) =>
     inp.addEventListener("change", () => {
       const scope = inp.closest<HTMLElement>("[data-scope]")?.dataset.scope;
@@ -821,6 +936,36 @@ function renderTitlePanel(): void {
   );
 }
 
+// Logo propio para el rótulo: se reduce a 400 px de alto y se guarda dentro del modelo (data URL).
+let logoUpload: ((dataUrl: string, aspect: number) => void) | undefined;
+const logoInput = document.createElement("input");
+logoInput.type = "file";
+logoInput.accept = "image/png,image/jpeg,image/svg+xml,image/webp";
+logoInput.addEventListener("change", async () => {
+  const f = logoInput.files?.[0];
+  logoInput.value = "";
+  if (!f) return;
+  try {
+    const url = await new Promise<string>((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result));
+      r.onerror = () => rej(new Error("No se pudo leer la imagen."));
+      r.readAsDataURL(f);
+    });
+    const img = new Image();
+    await new Promise<void>((res, rej) => ((img.onload = () => res()), (img.onerror = () => rej(new Error("La imagen no es válida."))), (img.src = url)));
+    const h = Math.min(400, img.naturalHeight || 400);
+    const w = Math.max(1, Math.round(((img.naturalWidth || 400) / (img.naturalHeight || 400)) * h));
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    c.getContext("2d")!.drawImage(img, 0, 0, w, h);
+    logoUpload?.(c.toDataURL("image/png"), w / h);
+  } catch (err) {
+    say(err instanceof Error ? err.message : String(err));
+  }
+});
+
 function renderEntityPanel(e: Entity | undefined): void {
   if (!e) return void (panel.innerHTML = "");
   let html = `<h2>${esc(KIND_NAMES[e.kind] ?? e.kind)}</h2>`;
@@ -837,9 +982,19 @@ function renderEntityPanel(e: Entity | undefined): void {
     case "Window":
       html += field("Ancho (m)", "frameWidth", e.frameWidth, "number", 'step="0.05"') + field("Alto (m)", "frameHeight", e.frameHeight, "number", 'step="0.05"');
       break;
-    case "Space":
+    case "Space": {
       html += field("Número", "number", e.number);
+      // Acabados: se eligen de la biblioteca (alto, lujo, premium) o se escriben.
+      const pp = e.properties ?? {};
+      const tipo = typeof pp["tipo_espacio"] === "string" ? (pp["tipo_espacio"] as RoomType) : undefined;
+      html += `</div><h3>Acabados</h3><div class="fields">`;
+      if (tipo && FINISHES.lujo[tipo]) html += `<label class="f"><span>Paquete de acabados</span><select id="finpack"><option value="">Elegir…</option><option value="alto">Alto</option><option value="lujo">Lujo</option><option value="premium">Premium</option></select></label>`;
+      for (const [k, label] of FIN_FIELDS) {
+        const opts = [...new Set(Object.values(FINISHES).flatMap((t) => Object.values(t).map((f) => String(f[FIN_KEY[k]!]))))].filter((x) => x && x !== "—");
+        html += `<label class="f"><span>${label}</span><input data-prop="${k}" data-type="text" list="dl-${k}" value="${esc(String(pp[k] ?? ""))}"><datalist id="dl-${k}">${opts.map((o) => `<option value="${esc(o)}">`).join("")}</datalist></label>`;
+      }
       break;
+    }
     case "Device": {
       const opts = [...SYMBOLS.values()].filter((d) => d.discipline === e.discipline).map((d) => `<option value="${d.key}" ${d.key === e.symbol ? "selected" : ""}>${esc(d.name)}</option>`).join("");
       html += `<label class="f"><span>Símbolo</span><select data-field="symbol">${opts}</select></label>`;
@@ -894,6 +1049,13 @@ function renderEntityPanel(e: Entity | undefined): void {
       apply({ properties: next });
     }),
   );
+  panel.querySelector<HTMLSelectElement>("#finpack")?.addEventListener("change", (ev) => {
+    const lvl = (ev.target as HTMLSelectElement).value as FinishLevel;
+    const tipo = props["tipo_espacio"] as RoomType;
+    if (!lvl || !tipo) return;
+    const fin = finishProps(lvl, tipo, typeof props["altura_cielo_m"] === "number" ? (props["altura_cielo_m"] as number) : 2.7);
+    apply({ properties: { ...props, ...fin } }, `Acabados ${lvl} en ${e.kind === "Space" ? e.name : ""}`);
+  });
   panel.querySelector<HTMLButtonElement>("#addprop")?.addEventListener("click", () => {
     const k = (panel.querySelector("#newkey") as HTMLInputElement).value.trim();
     const raw = (panel.querySelector("#newval") as HTMLInputElement).value.trim();
@@ -1033,12 +1195,8 @@ function fillPalettes(): void {
 }
 
 // Proyecto: guardar / abrir JSON, cargar el proyecto de referencia, empezar de cero.
-function slug(): string {
-  const p = [...store.entities()].find((e): e is Project => e.kind === "Project");
-  return (p?.titleBlock?.["archivo"] || p?.name || "arken-modelo").replace(/[^\w.-]+/g, "-");
-}
 $<HTMLButtonElement>("#save").addEventListener("click", () => {
-  download(`${slug()}.arken.json`, JSON.stringify(store.snapshot(), null, 2), "application/json").then(
+  download(`${arkenName("MODELO BIM")}.arken.json`, JSON.stringify(store.snapshot(), null, 2), "application/json").then(
     () => say("Modelo guardado.", true),
     (err: unknown) => say(err instanceof Error ? err.message : String(err)),
   );
@@ -1051,29 +1209,281 @@ fileInput.addEventListener("change", async () => {
   try {
     const model = JSON.parse(await f.text()) as BimModel;
     if (model.schemaVersion !== 1 || typeof model.entities !== "object" || typeof model.relations !== "object") throw new Error("No es un modelo ARKEN válido.");
-    loadModel(model, `Abierto: ${f.name}`);
+    loadModel(model, `Abierto: ${f.name}. Quedó guardado en la biblioteca.`, { origen: "Importado de archivo" });
   } catch (err) {
     say(err instanceof Error ? err.message : String(err));
   }
   fileInput.value = "";
 });
-$<HTMLButtonElement>("#lote01").addEventListener("click", () => {
-  if (store.canUndo && !confirmReplace()) return;
-  loadModel(buildLote01(), "Proyecto Casa Lote 01 · Bosque de Agua cargado.");
-});
-$<HTMLButtonElement>("#new").addEventListener("click", () => {
-  if (store.canUndo && !confirmReplace()) return;
-  loadModel(createStarterModel().model, "Modelo nuevo de ejemplo.");
-});
-function confirmReplace(): boolean {
-  return window.confirm("Se reemplazará el modelo abierto. ¿Guardaste el JSON? Pulsa Aceptar para continuar.");
+// ─── Biblioteca de proyectos ────────────────────────────────
+const LIB_CURRENT_KEY = "arken-diseno:biblioteca-actual";
+const LIB_SEED_KEY = "arken-diseno:biblioteca-semilla";
+let libCurrent: string | undefined;
+try {
+  libCurrent = localStorage.getItem(LIB_CURRENT_KEY) ?? undefined;
+} catch {
+  /* sin almacenamiento */
 }
-function loadModel(model: BimModel, msg: string): void {
+if (!init.restored) libCurrent = undefined;
+function setLibCurrent(id: string | undefined): void {
+  libCurrent = id;
+  try {
+    if (id) localStorage.setItem(LIB_CURRENT_KEY, id);
+    else localStorage.removeItem(LIB_CURRENT_KEY);
+  } catch {
+    /* sin almacenamiento */
+  }
+}
+/** Miniatura de la planta arquitectónica del primer piso, dibujada con el mismo motor de los planos. */
+function thumbnail(model: BimModel): string {
+  try {
+    const st = new BimStore(model);
+    const eng = new PlanGeometryEngine({ cutHeight: 1.2, scale: 100, textScale: 1 });
+    eng.rebuildAll(st);
+    const lv = [...st.entities()].filter((e): e is Level => e.kind === "Level" && !/cubierta/i.test(e.name ?? "")).sort((a, b) => a.elevation - b.elevation)[0];
+    if (!lv) return "";
+    const m: ViewMode = { kind: "model", levelId: lv.id, disciplines: new Set<Discipline>(["ARQ"]) };
+    const items = visibleGeoms(st, eng.all(), m).filter((v) => v.geom.kind !== "Annotation");
+    let box: { minX: number; minY: number; maxX: number; maxY: number } | undefined;
+    for (const v of items) {
+      const b = v.geom.box;
+      box = box ? { minX: Math.min(box.minX, b.minX), minY: Math.min(box.minY, b.minY), maxX: Math.max(box.maxX, b.maxX), maxY: Math.max(box.maxY, b.maxY) } : { ...b };
+    }
+    if (!box) return "";
+    const W = 640;
+    const H = 440;
+    const dpr = window.devicePixelRatio || 1;
+    const c = document.createElement("canvas");
+    c.width = Math.round(W * dpr);
+    c.height = Math.round(H * dpr);
+    const vp = new Viewport();
+    vp.width = W;
+    vp.height = H;
+    const pad = 28;
+    vp.scale = Math.min((W - 2 * pad) / Math.max(box.maxX - box.minX, 1), (H - 2 * pad) / Math.max(box.maxY - box.minY, 1));
+    vp.center = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
+    new PlanRenderer(c, vp).draw(st, items, 100, { selected: new Set(), hovered: undefined, snap: undefined, selectionRect: undefined, sketch: undefined }, undefined, false);
+    return c.toDataURL("image/jpeg", 0.86);
+  } catch {
+    return "";
+  }
+}
+/** Guarda el proyecto abierto en la biblioteca: actualiza su ficha o crea una nueva. */
+async function saveToLibrary(origen = "Guardado desde el editor", quiet = false): Promise<void> {
+  const model = store.snapshot();
+  const old = libCurrent ? await getProject(libCurrent) : undefined;
+  if (old) {
+    old.modelo = model;
+    old.resumen = summarize(model);
+    old.miniatura = thumbnail(model) || old.miniatura;
+    old.actualizado = Date.now();
+    await putProject(old);
+  } else {
+    const r = makeRecord(model, origen, thumbnail(model));
+    await putProject(r);
+    setLibCurrent(r.id);
+  }
+  if (!quiet) say(`Guardado en la biblioteca: ${projectLabel()}.`, true);
+}
+let libTimer: number | undefined;
+store.subscribe(() => {
+  if (!libCurrent) return;
+  window.clearTimeout(libTimer);
+  libTimer = window.setTimeout(() => void saveToLibrary("", true), 2500);
+});
+/** La Casa Lote 01 entra una vez a la biblioteca como proyecto de referencia (ya no tiene botón propio). */
+async function seedLibrary(): Promise<void> {
+  try {
+    if (localStorage.getItem(LIB_SEED_KEY)) return;
+    localStorage.setItem(LIB_SEED_KEY, "1");
+  } catch {
+    return;
+  }
+  if ((await listProjects()).some((r) => r.origen === "Proyecto de referencia")) return;
+  const m = buildLote01();
+  await putProject(makeRecord(m, "Proyecto de referencia", thumbnail(m), "Casa Lote 01 · Bosque de Agua"));
+}
+void seedLibrary();
+$<HTMLButtonElement>("#library").addEventListener("click", async () => {
+  await seedLibrary();
+  showLibrary({
+    currentId: () => libCurrent,
+    saveCurrent: () => saveToLibrary(),
+    open: async (r: LibRecord) => {
+      if (store.canUndo && !(await confirmReplace())) return false;
+      loadModel(r.modelo, `Abierto de la biblioteca: ${r.nombre}.`, { id: r.id });
+      return true;
+    },
+    thumbnail,
+    download: (r) =>
+      void download(`${safeName(`ARKEN DISENO-MODELO BIM-${today()}-${r.nombre.toUpperCase()}`)}.arken.json`, JSON.stringify(r.modelo, null, 2), "application/json").then(
+        () => say(`Descargado: ${r.nombre}.`, true),
+        (err: unknown) => say(err instanceof Error ? err.message : String(err)),
+      ),
+    importFile: () => fileInput.click(),
+    say,
+  });
+});
+$<HTMLButtonElement>("#render3d").addEventListener("click", () =>
+  showRenderStudio({
+    reader: () => store,
+    projectName: projectLabel,
+    fileName: arkenName,
+    save: (name, data) => download(name, data instanceof Blob ? data : new Blob([data as Uint8Array<ArrayBuffer>])),
+    say,
+    measure: canvasMeasure,
+  }),
+);
+$<HTMLButtonElement>("#new").addEventListener("click", () =>
+  showDesignAssistant({
+    load: async (model, msg) => {
+      if (store.canUndo && !(await confirmReplace())) return false;
+      loadModel(model, msg, { origen: "Diseñado con el asistente" });
+      return true;
+    },
+    openLote01Variant: showSpecForm,
+  }),
+);
+
+/** Proyecto nuevo por especificaciones: el diseño aprobado se ajusta a lo que pide el usuario. */
+function showSpecForm(): void {
+  const tb = projectEntity()?.titleBlock ?? {};
+  const spec: Record<string, string | number> = { ...defaultSpec() };
+  for (const k of ["empresa", "diseno", "matricula"] as const) if (tb[k]) spec[k] = tb[k];
+  const box = document.createElement("div");
+  box.className = "modal";
+  const groups = ["Rótulo", "Arquitectura", "Redes"] as const;
+  const body = groups
+    .map(
+      (g) =>
+        `<fieldset><legend>${g}</legend>${SPEC_FIELDS.filter((f) => f.group === g)
+          .map((f) => {
+            const v = spec[f.key];
+            const num = typeof v === "number";
+            const attrs = num ? `type="number" step="${f.step ?? 1}" min="${f.min ?? ""}" max="${f.max ?? ""}"` : 'type="text"';
+            return `<label class="f"><span>${esc(f.label)}${f.unit ? ` (${esc(f.unit)})` : ""}</span><input data-spec="${f.key}" ${attrs} value="${esc(String(v))}" title="${esc(f.help ?? (num ? `Entre ${f.min} y ${f.max}` : ""))}"></label>`;
+          })
+          .join("")}</fieldset>`,
+    )
+    .join("");
+  box.innerHTML = `<div class="modal-card spec"><div class="modal-bar"><b>Nuevo proyecto por especificaciones</b><span></span><button class="primary" data-a="go">Generar planos</button><button data-a="x">Cerrar</button></div>
+<div class="spec-body"><p class="muted">ARKEN DISEÑO toma el diseño aprobado de la Casa Lote 01 (arquitectura, estructura, eléctrica, iluminación, domótica, hidráulica, sanitaria, gas y solar, con sus 11 planos) y lo ajusta a estas especificaciones. Los recintos y las redes se estiran con la casa, las luminarias y los calibres se redimensionan solos, y todos los cuadros y memorias se recalculan.</p>
+<div class="spec-grid">${body}</div><p class="spec-msg"></p></div></div>`;
+  const msg = box.querySelector<HTMLElement>(".spec-msg")!;
+  const read = (): HouseSpec => {
+    const out: Record<string, string | number> = { ...spec };
+    box.querySelectorAll<HTMLInputElement>("[data-spec]").forEach((i) => (out[i.dataset.spec!] = i.type === "number" ? Number(i.value) : i.value));
+    return out as unknown as HouseSpec;
+  };
+  box.addEventListener("input", () => {
+    const s = read();
+    const errs = checkSpec(s);
+    msg.textContent = errs.length ? errs.join(" ") : `Casa de ${(s.ancho * s.largo).toFixed(1)} m² construidos (${s.ancho.toFixed(2)} × ${s.largo.toFixed(2)} m).`;
+    msg.classList.toggle("bad", errs.length > 0);
+  });
+  box.addEventListener("click", async (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (ev.target === box || a === "x") return box.remove();
+    if (a !== "go") return;
+    const s = read();
+    const errs = checkSpec(s);
+    if (errs.length) {
+      msg.textContent = errs.join(" ");
+      msg.classList.add("bad");
+      return;
+    }
+    if (store.canUndo && !(await confirmReplace())) return;
+    try {
+      loadModel(generateHouse(s), `Proyecto generado: ${s.proyecto} · ${(s.ancho * s.largo).toFixed(1)} m², 11 planos con todas las redes.`, { origen: "Generado por especificaciones" });
+      box.remove();
+    } catch (err) {
+      msg.textContent = err instanceof Error ? err.message : String(err);
+      msg.classList.add("bad");
+    }
+  });
+  document.body.appendChild(box);
+  box.dispatchEvent(new Event("input"));
+}
+const FIN_FIELDS: [string, string][] = [
+  ["acabado_piso", "Piso"],
+  ["acabado_guardaescoba", "Guardaescoba"],
+  ["acabado_muros", "Muros y pintura"],
+  ["acabado_enchape", "Enchapes y especiales"],
+  ["acabado_cielo", "Cielo"],
+];
+const FIN_KEY: Record<string, "piso" | "guardaescoba" | "muros" | "enchape" | "cielo"> = { acabado_piso: "piso", acabado_guardaescoba: "guardaescoba", acabado_muros: "muros", acabado_enchape: "enchape", acabado_cielo: "cielo" };
+
+/** Confirmación dentro de la página: la vista publicada no permite los cuadros del navegador (window.confirm). */
+function confirmReplace(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const box = document.createElement("div");
+    box.className = "modal confirm";
+    box.innerHTML = `<div class="modal-card ask"><div class="modal-bar"><b>Reemplazar el proyecto abierto</b></div><div class="ask-body"><p>Se reemplazará el modelo abierto por el nuevo. Si quiere conservarlo, guárdelo antes con <b>Guardar</b>.</p><div class="assist-row"><button class="primary" data-ok="1">Continuar</button><button data-ok="0">Cancelar</button></div></div></div>`;
+    box.addEventListener("click", (ev) => {
+      const ok = (ev.target as HTMLElement).closest<HTMLElement>("[data-ok]")?.dataset.ok;
+      if (ok === undefined && ev.target !== box) return;
+      box.remove();
+      resolve(ok === "1");
+    });
+    document.body.appendChild(box);
+    box.querySelector<HTMLButtonElement>("[data-ok='1']")!.focus();
+  });
+}
+/** `lib`: ficha de la biblioteca a la que pertenece (id) o, si es un proyecto nuevo, de dónde viene (se guarda solo). */
+function loadModel(model: BimModel, msg: string, lib?: { id: string } | { origen: string }): void {
   tool.cancel();
+  window.clearTimeout(libTimer);
+  setLibCurrent(undefined);
   store.load(model);
+  if (lib && "id" in lib) setLibCurrent(lib.id);
+  else if (lib) void saveToLibrary(lib.origen, true);
   mode = defaultMode();
   setMode(mode);
   say(msg, true);
+}
+
+// ─── Nombres de archivo: ARKEN DISENO-TIPO DE PLANO O DISEÑO-FECHA DE GUARDADO-NOMBRE DEL PROYECTO ──
+function today(): string {
+  const d = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+function projectEntity(): Project | undefined {
+  return [...store.entities()].find((e): e is Project => e.kind === "Project");
+}
+function projectLabel(): string {
+  const p = projectEntity();
+  return p?.titleBlock?.["proyecto"] || p?.name || "PROYECTO";
+}
+function arkenName(tipo: string): string {
+  return safeName(`ARKEN DISENO-${tipo.toUpperCase()}-${today()}-${projectLabel().toUpperCase()}`);
+}
+const sheetTipo = (s: Sheet) => `${s.number} ${s.title}`;
+const sheetItems = (s: Sheet) => visibleGeoms(store, engine.all(), { kind: "sheet", sheetId: s.id });
+
+/** Capítulos adicionales de las memorias (topografía, cuando hay levantamiento). */
+let extraChapters: () => ReportChapter[] = () => [];
+
+function reportHtml(): string {
+  const tb = projectEntity()?.titleBlock ?? {};
+  return calcReportHtml(store, { logo: titleLogo(tb), date: today(), extra: extraChapters() });
+}
+
+/** Descarga un DXF; si el visor no admite .dxf, lo entrega dentro de un .zip. */
+async function downloadDxf(name: string, text: string): Promise<void> {
+  try {
+    await download(`${name}.dxf`, text, "application/dxf");
+  } catch (err) {
+    if (!(err instanceof Error) || !/no permite/.test(err.message)) throw err;
+    await download(`${name}.zip`, new Blob([zip([{ name: `${name}.dxf`, data: text }])], { type: "application/zip" }));
+  }
+}
+
+async function sheetsPdf(sheets: readonly Sheet[], title: string, before?: (doc: PdfDocument) => Promise<void>): Promise<Uint8Array<ArrayBuffer>> {
+  const doc = new PdfDocument(canvasMeasure, title);
+  if (before) await before(doc);
+  for (const s of sheets) await sheetPdfPage(doc, store, s, sheetGeometry(s), sheetItems(s));
+  return doc.build();
 }
 
 // Exportación del plano activo.
@@ -1082,11 +1492,13 @@ async function exportSheet(kind: string): Promise<void> {
   if (!s) return say("Elige un plano para exportarlo.");
   const geo = sheetGeometry(s);
   const items = visibleGeoms(store, engine.all(), mode);
-  const name = `${slug()}_${s.number}`;
+  const name = arkenName(sheetTipo(s));
   try {
     if (kind === "svg") await download(`${name}.svg`, sheetSvg(store, s, geo, items), "image/svg+xml");
-    else if (kind === "pdf") printSvg(sheetSvg(store, s, geo, items), s);
-    else if (kind === "dxf") await download(`${name}.dxf`, sheetDxf(store, s, geo, items), "application/dxf");
+    else if (kind === "pdf") {
+      say("Generando PDF…", true);
+      await download(`${name}.pdf`, new Blob([await sheetsPdf([s], `${s.number} ${s.title}`)], { type: "application/pdf" }));
+    } else if (kind === "dxf") await downloadDxf(name, sheetDxf(store, s, geo, items));
     else if (kind === "png") {
       say("Generando PNG…", true);
       await download(`${name}.png`, await sheetPng(store, s, geo, items, 8));
@@ -1096,6 +1508,248 @@ async function exportSheet(kind: string): Promise<void> {
     say(err instanceof Error ? err.message : String(err));
   }
 }
+
+/** Paquete completo: todos los planos (PDF y DXF), el juego de planos, el modelo en metros, las memorias y el modelo BIM. */
+async function savePackage(): Promise<void> {
+  const sheets = allSheets(store);
+  if (!sheets.length) return say("El proyecto no tiene planos para guardar.");
+  try {
+    const files: ZipEntry[] = [];
+    let i = 0;
+    for (const s of sheets) {
+      say(`Preparando plano ${++i} de ${sheets.length}: ${s.number}…`, true);
+      await new Promise((r) => setTimeout(r, 0));
+      const name = arkenName(sheetTipo(s));
+      files.push({ name: `PDF/${name}.pdf`, data: await sheetsPdf([s], `${s.number} ${s.title}`) });
+      files.push({ name: `DXF/${name}.dxf`, data: sheetDxf(store, s, sheetGeometry(s), sheetItems(s)) });
+    }
+    say("Uniendo el juego completo de planos…", true);
+    const full = new PdfDocument(canvasMeasure, `Juego de planos · ${projectLabel()}`);
+    await extraPdf(full);
+    if (full.pages.length) files.push({ name: `PDF/${arkenName("T-01 TOPOGRAFIA E IMPLANTACION")}.pdf`, data: await full.build() });
+    files.push({ name: `PDF/${arkenName("JUEGO COMPLETO DE PLANOS")}.pdf`, data: await sheetsPdf(sheets, `Juego de planos · ${projectLabel()}`, extraPdf) });
+    files.push({ name: `DXF/${arkenName("MODELO EN METROS")}.dxf`, data: modelDxf(store, engine.all()) });
+    files.push({ name: `MEMORIAS/${arkenName("MEMORIAS DE CALCULO")}.html`, data: reportHtml() });
+    files.push({ name: `MODELO/${arkenName("MODELO BIM")}.arken.json`, data: JSON.stringify(store.snapshot(), null, 2) });
+    for (const f of extraFiles()) files.push(f);
+    files.push({ name: "LEEME.txt", data: readme(sheets) });
+    const pkg = arkenName("PLANOS Y DISENOS");
+    await download(`${pkg}.zip`, new Blob([zip(files)], { type: "application/zip" }));
+    say(`Guardado: ${sheets.length} planos en PDF y DXF, juego completo, modelo en metros y memorias de cálculo.`, true);
+  } catch (err) {
+    say(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Archivos y páginas adicionales del paquete (topografía). */
+let extraFiles: () => ZipEntry[] = () => [];
+let extraPdf: (doc: PdfDocument) => Promise<void> = async () => {};
+
+function readme(sheets: readonly Sheet[]): string {
+  return [
+    `ARKEN DISEÑO · ${projectLabel()}`,
+    `Guardado el ${today()}`,
+    "",
+    "PDF/      Cada plano a tamaño real de papel (vectorial) y el juego completo en un solo PDF.",
+    "DXF/      Cada plano para AutoCAD en mm de papel (escala 1:1 de impresión), capas por disciplina.",
+    "          MODELO EN METROS: todo el modelo en espacio modelo, en metros, capas DISCIPLINA-ELEMENTO.",
+    "MEMORIAS/ Memorias de cálculo de cada diseño (abrir en el navegador; se puede imprimir a PDF).",
+    "MODELO/   Modelo BIM editable de ARKEN DISEÑO (.arken.json).",
+    "",
+    "Planos:",
+    ...sheets.map((s) => `  ${s.number.padEnd(6)} ${s.title}`),
+    "",
+  ].join("\r\n");
+}
+
+// Memorias de cálculo: vista previa en la app y descarga.
+function showReport(): void {
+  const html = reportHtml();
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.innerHTML = `<div class="modal-card"><div class="modal-bar"><b>Memorias de cálculo</b><span></span><button class="primary" data-a="dl">Descargar</button><button data-a="x">Cerrar</button></div><iframe title="Memorias de cálculo"></iframe></div>`;
+  box.querySelector("iframe")!.srcdoc = html;
+  box.addEventListener("click", (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (ev.target === box || a === "x") box.remove();
+    if (a === "dl")
+      download(`${arkenName("MEMORIAS DE CALCULO")}.html`, html, "text/html").then(
+        () => say("Memorias de cálculo descargadas.", true),
+        (err: unknown) => say(err instanceof Error ? err.message : String(err)),
+      );
+  });
+  document.body.appendChild(box);
+}
+// ─── Topografía: levantamiento, terreno 3D e implantación ────
+let terrainCache: { json: string; terrain: Terrain } | undefined;
+function currentSite(): Site | undefined {
+  const pr = projectEntity();
+  const props = pr?.properties ?? {};
+  const json = typeof props["topografia"] === "string" ? props["topografia"] : "";
+  if (!json) return undefined;
+  if (terrainCache?.json !== json) {
+    const sv = decodeSurvey(json);
+    if (!sv) return undefined;
+    terrainCache = { json, terrain: new Terrain(sv) };
+  }
+  const n = (k: string) => (typeof props[k] === "number" ? (props[k] as number) : NaN);
+  const footprint = houseFootprint(store, pr);
+  let placement: Placement = { x: n("topo_x"), y: n("topo_y"), rotDeg: n("topo_rot"), npt: n("topo_npt") };
+  if (![placement.x, placement.y, placement.rotDeg, placement.npt].every(Number.isFinite)) {
+    const xs = footprint.map((q) => q.x), ys = footprint.map((q) => q.y);
+    placement = defaultPlacement(terrainCache.terrain, { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) });
+  }
+  const h = typeof props["cubierta_alta_m"] === "number" ? (props["cubierta_alta_m"] as number) : 3.2;
+  return { terrain: terrainCache.terrain, placement, footprint, height: h };
+}
+function putSite(patch: Record<string, string | number>, label: string): void {
+  const pr = projectEntity();
+  if (!pr) return say("El modelo no tiene proyecto.");
+  const properties = { ...(pr.properties ?? {}) } as Record<string, PropertyValue>;
+  for (const [k, v] of Object.entries(patch)) properties[k] = v;
+  put({ ...pr, properties }, label);
+}
+function implantation(site: Site) {
+  return implantationSheet(store, site, allSheets(store)[0], engine.all(), siteEarthwork(site));
+}
+extraChapters = () => {
+  const site = currentSite();
+  return site ? [topoChapter(site)] : [];
+};
+extraFiles = () => {
+  const site = currentSite();
+  if (!site) return [];
+  const imp = implantation(site);
+  return [
+    { name: `DXF/${arkenName("TOPOGRAFIA E IMPLANTACION")}.dxf`, data: topoDxf(store, site, engine.all()) },
+    { name: `DXF/${arkenName("T-01 TOPOGRAFIA E IMPLANTACION PLANO")}.dxf`, data: sheetDxf(store, imp.sheet, buildSheet(store, imp.sheet), imp.items) },
+    { name: `TOPOGRAFIA/${arkenName("PUNTOS DEL LEVANTAMIENTO")}.csv`, data: surveyCsv(site) },
+  ];
+};
+extraPdf = async (doc) => {
+  const site = currentSite();
+  if (!site) return;
+  const imp = implantation(site);
+  await sheetPdfPage(doc, store, imp.sheet, buildSheet(store, imp.sheet), imp.items);
+};
+
+function showTopo(): void {
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.innerHTML = `<div class="modal-card topo"><div class="modal-bar"><b>Topografía e implantación</b><span></span><button data-a="x">Cerrar</button></div>
+<div class="topo-body"><div class="topo-view"><canvas></canvas><div class="topo-tools"><button data-a="3d">3D</button><button data-a="top">Planta</button><label>Exageración <input data-a="exag" type="range" min="1" max="5" step="0.5" value="1.5"></label></div></div>
+<aside class="topo-side panel"></aside></div></div>`;
+  const canvas = box.querySelector("canvas")!;
+  const side = box.querySelector<HTMLElement>(".topo-side")!;
+  const view = new TerrainView(canvas);
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = ".dxf,.csv,.txt,.xyz";
+  const load = (text: string, name: string) => {
+    try {
+      const sv = readSurvey(text, name);
+      putSite({ topografia: encodeSurvey(sv), topo_x: NaN, topo_y: NaN, topo_rot: NaN, topo_npt: NaN }, "Cargar levantamiento topográfico");
+      const site = currentSite();
+      if (site) putSite({ topo_x: round2(site.placement.x), topo_y: round2(site.placement.y), topo_rot: 0, topo_npt: site.placement.npt }, "Implantar la casa");
+      say(`Levantamiento leído: ${sv.stats["leidos"]} puntos con cota (${sv.points.length} usados).`, true);
+    } catch (err) {
+      say(err instanceof Error ? err.message : String(err));
+    }
+    render();
+  };
+  file.addEventListener("change", async () => {
+    const f0 = file.files?.[0];
+    file.value = "";
+    if (f0) load(await f0.text(), f0.name);
+  });
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const fx = (v: number, d = 2) => (Number.isFinite(v) ? v.toLocaleString("es-CO", { minimumFractionDigits: d, maximumFractionDigits: d }) : "—");
+  function render(): void {
+    const site = currentSite();
+    view.site = site;
+    view.draw();
+    let html = `<h2>Levantamiento</h2><p class="muted">Plano del topógrafo en DXF (puntos, polilíneas 3D, curvas con elevación, bloques con atributo de cota) o archivo de puntos PNEZD (.csv / .txt).</p>
+<div class="logo-btns"><button class="primary" data-a="load">Cargar levantamiento…</button><button data-a="sample">Ejemplo</button></div>`;
+    if (site) {
+      const t = site.terrain;
+      const ew = siteEarthwork(site);
+      const pl = site.placement;
+      html += `<p class="muted">${esc(t.survey.source)} · ${t.survey.points.length} puntos · ${t.tin.tris.length} triángulos<br>Cotas ${fx(t.zMin)} a ${fx(t.zMax)} m · curvas cada ${fx(t.contourInterval())} m</p>
+<h2>Ubicar la casa</h2><div class="fields">
+${field("X origen casa (m)", "topo_x", round2(pl.x), "number", 'step="0.5"')}
+${field("Y origen casa (m)", "topo_y", round2(pl.y), "number", 'step="0.5"')}
+${field("Giro (°)", "topo_rot", round2(pl.rotDeg), "number", 'step="1"')}
+${field("NPT ±0.00 (m)", "topo_npt", round2(pl.npt), "number", 'step="0.05"')}
+</div><div class="logo-btns" style="margin-top:8px"><button data-a="balance">NPT de equilibrio (${fx(ew.balancedNpt)})</button><button data-a="center">Centrar</button></div>
+<h2>Movimiento de tierras</h2><table class="kv-mini">
+<tr><td>Terreno bajo la casa</td><td>${fx(ew.zMin)} a ${fx(ew.zMax)} m</td></tr>
+<tr><td>Pendiente media</td><td>${fx(ew.slopePct, 1)} %</td></tr>
+<tr><td>Subrasante</td><td>${fx(ew.platform)} m</td></tr>
+<tr><td><b>Corte</b></td><td><b>${fx(ew.cut, 1)} m³</b></td></tr>
+<tr><td><b>Lleno</b></td><td><b>${fx(ew.fill, 1)} m³</b></td></tr>
+${ew.outside > 0 ? `<tr><td colspan="2" class="warn">${fx(ew.outside, 1)} m² de la casa quedan fuera del levantamiento.</td></tr>` : ""}
+</table>
+<h2>Exportar</h2><div class="logo-btns"><button data-a="pdf">Plano T-01 (PDF)</button><button data-a="dxf">DXF topográfico</button></div>
+<p class="muted">El plano de implantación, el DXF y el capítulo de topografía de las memorias también entran en "Guardar planos".</p>`;
+    }
+    side.innerHTML = html;
+    side.querySelectorAll<HTMLInputElement>("[data-field]").forEach((inp) =>
+      inp.addEventListener("change", () => {
+        const v = Number(inp.value);
+        if (!Number.isFinite(v)) return;
+        const cur = currentSite();
+        if (!cur) return;
+        const pl = cur.placement;
+        putSite({ topo_x: pl.x, topo_y: pl.y, topo_rot: pl.rotDeg, topo_npt: pl.npt, [inp.dataset.field!]: v }, "Mover la implantación");
+        render();
+      }),
+    );
+  }
+  box.addEventListener("click", async (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (ev.target === box || a === "x") return box.remove();
+    const site = currentSite();
+    if (a === "load") file.click();
+    else if (a === "sample") load(sampleSurveyDxf(), "Levantamiento de ejemplo (Alto de Las Palmas).dxf");
+    else if (a === "3d") (view.yaw = -0.6), (view.pitch = 0.8), view.draw();
+    else if (a === "top") view.topView();
+    else if (a === "balance" && site) {
+      const pl = site.placement;
+      putSite({ topo_x: pl.x, topo_y: pl.y, topo_rot: pl.rotDeg, topo_npt: siteEarthwork(site).balancedNpt }, "NPT de equilibrio");
+      render();
+    } else if (a === "center" && site) {
+      const xs = site.footprint.map((q) => q.x), ys = site.footprint.map((q) => q.y);
+      const d = defaultPlacement(site.terrain, { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) });
+      putSite({ topo_x: round2(d.x), topo_y: round2(d.y), topo_rot: 0, topo_npt: d.npt }, "Centrar la casa en el lote");
+      render();
+    } else if (a === "pdf" && site) {
+      try {
+        const imp = implantation(site);
+        const doc = new PdfDocument(canvasMeasure, "T-01 Topografía e implantación");
+        await sheetPdfPage(doc, store, imp.sheet, buildSheet(store, imp.sheet), imp.items);
+        await download(`${arkenName("T-01 TOPOGRAFIA E IMPLANTACION")}.pdf`, new Blob([await doc.build()], { type: "application/pdf" }));
+        say("Plano de implantación descargado.", true);
+      } catch (err) {
+        say(err instanceof Error ? err.message : String(err));
+      }
+    } else if (a === "dxf" && site) {
+      downloadDxf(arkenName("TOPOGRAFIA E IMPLANTACION"), topoDxf(store, site, engine.all())).then(
+        () => say("DXF topográfico descargado.", true),
+        (err: unknown) => say(err instanceof Error ? err.message : String(err)),
+      );
+    }
+  });
+  box.querySelector<HTMLInputElement>('[data-a="exag"]')!.addEventListener("input", (e) => {
+    view.exag = Number((e.target as HTMLInputElement).value);
+    view.draw();
+  });
+  document.body.appendChild(box);
+  render();
+  new ResizeObserver(() => view.draw()).observe(canvas);
+}
+$<HTMLButtonElement>("#topo").addEventListener("click", showTopo);
+$<HTMLButtonElement>("#package").addEventListener("click", () => void savePackage());
+$<HTMLButtonElement>("#report").addEventListener("click", showReport);
 document.querySelectorAll<HTMLButtonElement>("[data-export]").forEach((b) => b.addEventListener("click", () => void exportSheet(b.dataset.export!)));
 
 // ─── Arranque ───────────────────────────────────────────────

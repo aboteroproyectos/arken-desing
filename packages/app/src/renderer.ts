@@ -47,7 +47,7 @@ export class PlanRenderer {
   }
 
   /** `drawScale`: denominador de la escala de dibujo (los grosores en mm de papel dependen de ella). */
-  draw(model: ModelReader, items: readonly Visible[], drawScale: number, o: Overlay, sheet?: SheetScene): void {
+  draw(model: ModelReader, items: readonly Visible[], drawScale: number, o: Overlay, sheet?: SheetScene, grid = true): void {
     const { ctx, view } = this;
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -67,7 +67,7 @@ export class PlanRenderer {
       ctx.beginPath();
       ctx.rect(va.x, va.y, vb.x - va.x, vb.y - va.y);
       ctx.clip();
-    } else this.drawGrid();
+    } else if (grid) this.drawGrid();
 
     for (const it of items) {
       const g = it.geom;

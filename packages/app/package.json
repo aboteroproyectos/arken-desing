@@ -10,11 +10,16 @@
     "build:single": "vite build && node scripts/single-file.mjs"
   },
   "dependencies": {
+    "@arken/calc": "*",
     "@arken/core": "*",
     "@arken/geometry": "*",
-    "@arken/spatial": "*",
-    "@arken/calc": "*",
+    "@arken/projects": "*",
     "@arken/sheets": "*",
-    "@arken/projects": "*"
+    "@arken/spatial": "*",
+    "@arken/terrain": "*",
+    "@types/three": "0.187.0",
+    "three": "0.187.0",
+    "three-gpu-pathtracer": "0.0.28",
+    "three-mesh-bvh": "0.9.18"
   }
 }
